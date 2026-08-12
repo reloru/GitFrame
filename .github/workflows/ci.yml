@@ -36,6 +36,9 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
+      # vitest is configured with hard coverage thresholds (90% lines /
+      # statements / functions, 85% branches), so this step fails the build on
+      # its own if coverage regresses — independently of the upload below.
       - name: Test with coverage
         run: npm run coverage
 
@@ -50,3 +53,9 @@ jobs:
           file: coverage/cobertura-coverage.xml
           language: JavaScript
           label: code-coverage/vitest
+          # The ingestion endpoint 404s until GitHub Code Quality is enabled for
+          # the repository (Settings -> Advanced Security -> Code quality).
+          # Until then this reports a warning instead of failing a build whose
+          # coverage gate has already passed in the step above; once it is
+          # enabled, results start flowing with no change needed here.
+          fail-on-error: false
