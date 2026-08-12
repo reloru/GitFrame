@@ -1,0 +1,786 @@
+/*
+ * GitFrame — mobile-first styles.
+ *
+ * Rules this file exists to enforce:
+ *   · Every tappable thing is at least 48px, primary actions 60px+.
+ *   · Inputs are >=16px so iOS Safari never zooms on focus.
+ *   · Nothing ever overflows horizontally, so the page never pans sideways.
+ *   · Heights use dvh, so the browser's collapsing chrome can't clip the UI.
+ */
+
+:root {
+  --bg: #0b0f14;
+  --surface: #141b23;
+  --surface-2: #1c2530;
+  --line: #2a3542;
+  --text: #eef3f8;
+  --muted: #93a3b5;
+  --primary: #3d8bff;
+  --primary-press: #2f6fd0;
+  --accent: #22c98a;
+  --accent-press: #1aa571;
+  --danger: #ff5c6a;
+  --danger-press: #d9414f;
+
+  --tap: 52px;
+  --jumbo: 60px;
+  --radius: 14px;
+  --gap: 14px;
+  --pad: 16px;
+
+  --safe-b: env(safe-area-inset-bottom, 0px);
+  --safe-t: env(safe-area-inset-top, 0px);
+  --safe-l: env(safe-area-inset-left, 0px);
+  --safe-r: env(safe-area-inset-right, 0px);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  /* The single most important line for "no sideways zooming weirdness". */
+  overflow-x: hidden;
+  max-width: 100%;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font: 16px/1.5 -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, system-ui, sans-serif;
+  min-height: 100dvh;
+  padding-left: var(--safe-l);
+  padding-right: var(--safe-r);
+  /* Kills the iOS double-tap-to-zoom delay across the whole app. */
+  touch-action: manipulation;
+  -webkit-text-size-adjust: 100%;
+  -webkit-tap-highlight-color: transparent;
+}
+
+img,
+svg,
+video,
+canvas {
+  max-width: 100%;
+  display: block;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+/* ------------------------------------------------------------------ */
+/* Top bar                                                             */
+/* ------------------------------------------------------------------ */
+
+.topbar {
+  padding: calc(var(--safe-t) + 14px) var(--pad) 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+  position: sticky;
+  top: 0;
+  z-index: 5;
+}
+
+.topbar__title {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+.topbar__sub {
+  margin: 2px 0 0;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+main {
+  padding: var(--pad);
+  padding-bottom: calc(var(--pad) + 96px + var(--safe-b));
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+/* ------------------------------------------------------------------ */
+/* Buttons — the "no tiny buttons" section                             */
+/* ------------------------------------------------------------------ */
+
+.btn {
+  -webkit-appearance: none;
+  appearance: none;
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+  color: var(--text);
+  border-radius: var(--radius);
+  min-height: var(--tap);
+  min-width: var(--tap);
+  padding: 0 18px;
+  font-size: 16px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  touch-action: manipulation;
+  transition: transform 0.06s ease, background-color 0.12s ease, opacity 0.12s ease;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.btn:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+.btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.btn:focus-visible {
+  outline: 3px solid var(--primary);
+  outline-offset: 2px;
+}
+
+.btn--primary {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: #fff;
+}
+.btn--primary:active:not(:disabled) {
+  background: var(--primary-press);
+}
+
+.btn--accent {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #04231a;
+}
+.btn--accent:active:not(:disabled) {
+  background: var(--accent-press);
+}
+
+.btn--danger {
+  background: transparent;
+  border-color: var(--danger);
+  color: var(--danger);
+}
+.btn--danger:active:not(:disabled) {
+  background: var(--danger-press);
+  color: #fff;
+}
+
+.btn--ghost {
+  background: transparent;
+}
+
+.btn--jumbo {
+  width: 100%;
+  min-height: var(--jumbo);
+  font-size: 17px;
+}
+
+.btn--small {
+  min-height: 48px;
+  font-size: 15px;
+  padding: 0 14px;
+}
+
+.btn--icon {
+  flex: 1 1 0;
+  min-height: 56px;
+  padding: 0 4px;
+  font-size: 16px;
+  font-variant-numeric: tabular-nums;
+}
+
+.btn--play {
+  flex: 1.4 1 0;
+  background: var(--primary);
+  border-color: var(--primary);
+  color: #fff;
+  font-size: 20px;
+}
+
+/* ------------------------------------------------------------------ */
+/* Empty state                                                         */
+/* ------------------------------------------------------------------ */
+
+.empty {
+  border: 2px dashed var(--line);
+  border-radius: 20px;
+  padding: 36px 20px;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  background: var(--surface);
+}
+
+.empty__art {
+  color: var(--primary);
+}
+
+.empty__title {
+  margin: 0;
+  font-size: 22px;
+}
+
+.empty__hint {
+  margin: 0 0 8px;
+  color: var(--muted);
+  font-size: 15px;
+  max-width: 34ch;
+}
+
+.empty__error {
+  margin: 4px 0 0;
+  color: var(--danger);
+  font-size: 15px;
+}
+
+.empty .btn--jumbo {
+  max-width: 420px;
+}
+
+/* ------------------------------------------------------------------ */
+/* Stage                                                               */
+/* ------------------------------------------------------------------ */
+
+.workspace {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.stage {
+  position: relative;
+  background: #000;
+  border-radius: var(--radius);
+  overflow: hidden;
+  border: 1px solid var(--line);
+}
+
+.stage__video {
+  width: 100%;
+  /* Cap so a portrait clip can't push the controls off-screen. */
+  max-height: 46dvh;
+  object-fit: contain;
+  background: #000;
+}
+
+.stage__badge {
+  position: absolute;
+  left: 8px;
+  bottom: 8px;
+  background: rgba(0, 0, 0, 0.66);
+  backdrop-filter: blur(6px);
+  color: #fff;
+  font-size: 12px;
+  padding: 5px 9px;
+  border-radius: 8px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ------------------------------------------------------------------ */
+/* Scrubber                                                            */
+/* ------------------------------------------------------------------ */
+
+.scrub__times {
+  display: flex;
+  justify-content: space-between;
+  font-size: 15px;
+  font-variant-numeric: tabular-nums;
+  margin-bottom: 6px;
+}
+
+.scrub__now {
+  font-weight: 700;
+}
+
+.scrub__total {
+  color: var(--muted);
+}
+
+/*
+ * Range inputs: the native thumb is ~12px, which is unusable with a thumb.
+ * These are 30px on a 12px track, inside a 48px touch row.
+ */
+.scrub__range,
+.range {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 48px;
+  background: transparent;
+  margin: 0;
+  touch-action: pan-y;
+}
+
+.scrub__range::-webkit-slider-runnable-track,
+.range::-webkit-slider-runnable-track {
+  height: 12px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+}
+
+.scrub__range::-moz-range-track,
+.range::-moz-range-track {
+  height: 12px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+}
+
+.scrub__range::-webkit-slider-thumb,
+.range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: var(--primary);
+  border: 3px solid #fff;
+  margin-top: -10px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.5);
+}
+
+.scrub__range::-moz-range-thumb,
+.range::-moz-range-thumb {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: var(--primary);
+  border: 3px solid #fff;
+}
+
+.transport {
+  display: flex;
+  gap: 8px;
+}
+
+/* ------------------------------------------------------------------ */
+/* Panels                                                              */
+/* ------------------------------------------------------------------ */
+
+.panel {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.panel__summary {
+  min-height: var(--tap);
+  display: flex;
+  align-items: center;
+  padding: 0 var(--pad);
+  font-weight: 700;
+  font-size: 16px;
+  cursor: pointer;
+  list-style: none;
+  touch-action: manipulation;
+}
+
+.panel__summary::-webkit-details-marker {
+  display: none;
+}
+
+.panel__summary::after {
+  content: '＋';
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 20px;
+}
+
+.panel[open] .panel__summary::after {
+  content: '−';
+}
+
+.panel__body {
+  padding: 4px var(--pad) var(--pad);
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap);
+}
+
+.panel__summary-line {
+  margin: 0;
+  color: var(--muted);
+  font-size: 15px;
+  text-align: center;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.field__label {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.field__value {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.field__hint {
+  font-weight: 400;
+  font-size: 13px;
+}
+
+/* Segmented control — each option is a full-height tap target */
+.segmented {
+  display: flex;
+  gap: 6px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 5px;
+}
+
+.segmented__btn {
+  -webkit-appearance: none;
+  appearance: none;
+  flex: 1 1 0;
+  min-height: 46px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 15px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.segmented__btn.is-active {
+  background: var(--primary);
+  color: #fff;
+}
+
+.segmented__btn:focus-visible {
+  outline: 3px solid var(--primary);
+  outline-offset: 2px;
+}
+
+/* Stepper — replaces the unusable native number spinner */
+.stepper {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+}
+
+.stepper__btn {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 56px;
+  min-height: var(--tap);
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+  color: var(--text);
+  border-radius: var(--radius);
+  font-size: 24px;
+  line-height: 1;
+  font-family: inherit;
+  cursor: pointer;
+  touch-action: manipulation;
+  flex: 0 0 auto;
+}
+
+.stepper__btn:active {
+  background: var(--line);
+}
+
+.stepper__btn:focus-visible {
+  outline: 3px solid var(--primary);
+  outline-offset: 2px;
+}
+
+.stepper__input {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: var(--tap);
+  text-align: center;
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+  color: var(--text);
+  border-radius: var(--radius);
+  /* 16px exactly — anything smaller and iOS zooms the page on focus. */
+  font-size: 17px;
+  font-weight: 600;
+  font-family: inherit;
+  font-variant-numeric: tabular-nums;
+}
+
+.stepper__input:focus-visible {
+  outline: 3px solid var(--primary);
+  outline-offset: 2px;
+}
+
+/* ------------------------------------------------------------------ */
+/* Gallery                                                             */
+/* ------------------------------------------------------------------ */
+
+.gallery-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.gallery-head__title {
+  margin: 0;
+  font-size: 18px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.gallery-head__hint {
+  margin: 0;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.pill {
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 2px 10px;
+  font-size: 14px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.gallery-section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.gallery {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  /* Two big tiles on a phone rather than a grid of stamps. */
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 10px;
+}
+
+.tile {
+  position: relative;
+  border: 2px solid var(--line);
+  border-radius: 12px;
+  overflow: hidden;
+  background: #000;
+  /* The whole tile is the tap target. */
+  min-height: 96px;
+  padding: 0;
+  cursor: pointer;
+  touch-action: manipulation;
+  width: 100%;
+  display: block;
+  font-family: inherit;
+}
+
+.tile.is-selected {
+  border-color: var(--accent);
+}
+
+.tile__img {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+  background: #000;
+}
+
+.tile__time {
+  position: absolute;
+  left: 6px;
+  bottom: 6px;
+  background: rgba(0, 0, 0, 0.7);
+  color: #fff;
+  font-size: 12px;
+  padding: 3px 7px;
+  border-radius: 6px;
+  font-variant-numeric: tabular-nums;
+}
+
+.tile__check {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.6);
+  border: 2px solid #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-size: 16px;
+}
+
+.tile.is-selected .tile__check {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #04231a;
+}
+
+.gallery-actions {
+  display: flex;
+  gap: 10px;
+}
+
+.gallery-actions .btn {
+  flex: 1 1 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* Sticky dock                                                         */
+/* ------------------------------------------------------------------ */
+
+.dock {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 12px var(--pad) calc(12px + var(--safe-b));
+  background: linear-gradient(180deg, rgba(11, 15, 20, 0) 0%, var(--bg) 34%);
+  z-index: 6;
+  padding-left: calc(var(--pad) + var(--safe-l));
+  padding-right: calc(var(--pad) + var(--safe-r));
+}
+
+.btn--dock {
+  width: 100%;
+  min-height: var(--jumbo);
+  font-size: 17px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+}
+
+/* ------------------------------------------------------------------ */
+/* Progress overlay                                                    */
+/* ------------------------------------------------------------------ */
+
+.overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(5, 8, 11, 0.86);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--pad);
+  z-index: 20;
+}
+
+.overlay__card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  padding: 22px;
+  width: 100%;
+  max-width: 380px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  text-align: center;
+}
+
+.overlay__label {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.overlay__track {
+  height: 12px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.overlay__bar {
+  height: 100%;
+  width: 0%;
+  background: var(--accent);
+  transition: width 0.12s linear;
+}
+
+.overlay__detail {
+  margin: 0;
+  color: var(--muted);
+  font-size: 15px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ------------------------------------------------------------------ */
+/* Toast                                                               */
+/* ------------------------------------------------------------------ */
+
+.toast {
+  position: fixed;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: calc(88px + var(--safe-b));
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  color: var(--text);
+  padding: 12px 18px;
+  border-radius: 999px;
+  font-size: 15px;
+  z-index: 30;
+  max-width: calc(100vw - 32px);
+  text-align: center;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.5);
+}
+
+/* ------------------------------------------------------------------ */
+/* Larger screens: keep it centred rather than stretched               */
+/* ------------------------------------------------------------------ */
+
+@media (min-width: 720px) {
+  main,
+  .dock {
+    max-width: 680px;
+    margin-inline: auto;
+  }
+
+  .stage__video {
+    max-height: 52dvh;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition: none !important;
+    animation: none !important;
+  }
+}

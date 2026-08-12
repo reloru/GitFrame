@@ -1,0 +1,252 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <!--
+      No `user-scalable=no` and no `maximum-scale`: pinch-zoom stays available
+      for accessibility. The layout simply never needs it — every control is
+      thumb-sized and the page never scrolls sideways.
+    -->
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="dark" />
+    <meta name="theme-color" content="#0b0f14" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta
+      name="description"
+      content="Pull still frames out of a video on your phone. Runs entirely on your device — nothing is uploaded and nothing is stored."
+    />
+    <title>GitFrame — video frame extractor</title>
+    <link rel="icon" href="/icon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <h1 class="topbar__title">GitFrame</h1>
+      <p class="topbar__sub" id="privacy-note">On-device only · nothing uploaded · nothing stored</p>
+    </header>
+
+    <main id="main">
+      <!-- ---------------------------------------------------------- -->
+      <!-- Empty state: one enormous tap target.                       -->
+      <!-- ---------------------------------------------------------- -->
+      <section id="empty-state" class="empty" aria-labelledby="empty-title">
+        <div class="empty__art" aria-hidden="true">
+          <svg viewBox="0 0 48 48" width="64" height="64" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="4" y="10" width="30" height="28" rx="4" />
+            <path d="M34 20l10-6v20l-10-6z" />
+            <circle cx="14" cy="19" r="2.5" />
+          </svg>
+        </div>
+        <h2 class="empty__title" id="empty-title">Choose a video</h2>
+        <p class="empty__hint">
+          Anything your phone can play. The file never leaves your device.
+        </p>
+        <button type="button" class="btn btn--primary btn--jumbo" id="pick-btn">
+          Choose video
+        </button>
+        <input
+          type="file"
+          id="file-input"
+          class="visually-hidden"
+          accept="video/*"
+          aria-label="Choose a video file"
+        />
+        <p class="empty__error" id="load-error" role="alert" hidden></p>
+      </section>
+
+      <!-- ---------------------------------------------------------- -->
+      <!-- Workspace                                                   -->
+      <!-- ---------------------------------------------------------- -->
+      <section id="workspace" class="workspace" hidden>
+        <div class="stage">
+          <video
+            id="video"
+            class="stage__video"
+            playsinline
+            preload="auto"
+            disablepictureinpicture
+            disableremoteplayback
+          ></video>
+          <div class="stage__badge" id="video-meta" aria-live="polite"></div>
+        </div>
+
+        <!-- Scrubber -->
+        <div class="scrub">
+          <div class="scrub__times">
+            <span class="scrub__now" id="time-current">0:00.000</span>
+            <span class="scrub__total" id="time-total">0:00</span>
+          </div>
+          <input
+            type="range"
+            id="scrub"
+            class="scrub__range"
+            min="0"
+            max="100"
+            step="0.001"
+            value="0"
+            aria-label="Seek through the video"
+          />
+        </div>
+
+        <!-- Transport: big, evenly spread, thumb-reachable -->
+        <div class="transport" role="group" aria-label="Playback controls">
+          <button type="button" class="btn btn--icon" id="back-second" aria-label="Back one second">
+            <span aria-hidden="true">−1s</span>
+          </button>
+          <button type="button" class="btn btn--icon" id="back-frame" aria-label="Previous frame">
+            <span aria-hidden="true">◀|</span>
+          </button>
+          <button type="button" class="btn btn--icon btn--play" id="play-toggle" aria-label="Play">
+            <span aria-hidden="true" id="play-icon">▶</span>
+          </button>
+          <button type="button" class="btn btn--icon" id="fwd-frame" aria-label="Next frame">
+            <span aria-hidden="true">|▶</span>
+          </button>
+          <button type="button" class="btn btn--icon" id="fwd-second" aria-label="Forward one second">
+            <span aria-hidden="true">+1s</span>
+          </button>
+        </div>
+
+        <button type="button" class="btn btn--primary btn--jumbo" id="grab-btn">
+          Grab this frame
+        </button>
+
+        <!-- Batch extraction -->
+        <details class="panel" id="auto-panel" open>
+          <summary class="panel__summary">Extract many frames</summary>
+          <div class="panel__body">
+            <div class="segmented" role="radiogroup" aria-label="Extraction mode">
+              <button type="button" class="segmented__btn is-active" id="mode-interval" role="radio" aria-checked="true">
+                Every N sec
+              </button>
+              <button type="button" class="segmented__btn" id="mode-count" role="radio" aria-checked="false">
+                N frames total
+              </button>
+            </div>
+
+            <div class="field" id="interval-field">
+              <label class="field__label" for="interval-input">Seconds between frames</label>
+              <div class="stepper">
+                <button type="button" class="stepper__btn" id="interval-minus" aria-label="Decrease interval">−</button>
+                <input
+                  type="text"
+                  inputmode="decimal"
+                  id="interval-input"
+                  class="stepper__input"
+                  value="1"
+                />
+                <button type="button" class="stepper__btn" id="interval-plus" aria-label="Increase interval">+</button>
+              </div>
+            </div>
+
+            <div class="field" id="count-field" hidden>
+              <label class="field__label" for="count-input">How many frames</label>
+              <div class="stepper">
+                <button type="button" class="stepper__btn" id="count-minus" aria-label="Fewer frames">−</button>
+                <input
+                  type="text"
+                  inputmode="numeric"
+                  id="count-input"
+                  class="stepper__input"
+                  value="24"
+                />
+                <button type="button" class="stepper__btn" id="count-plus" aria-label="More frames">+</button>
+              </div>
+            </div>
+
+            <p class="panel__summary-line" id="plan-summary" aria-live="polite">—</p>
+            <button type="button" class="btn btn--accent btn--jumbo" id="auto-btn">
+              Extract frames
+            </button>
+          </div>
+        </details>
+
+        <!-- Output settings -->
+        <details class="panel" id="settings-panel">
+          <summary class="panel__summary">Output settings</summary>
+          <div class="panel__body">
+            <div class="field">
+              <span class="field__label" id="format-label">Format</span>
+              <div class="segmented" role="radiogroup" aria-labelledby="format-label" id="format-group"></div>
+            </div>
+
+            <div class="field" id="quality-field">
+              <label class="field__label" for="quality">
+                Quality <span class="field__value" id="quality-value">92%</span>
+              </label>
+              <input
+                type="range"
+                id="quality"
+                class="range"
+                min="30"
+                max="100"
+                step="1"
+                value="92"
+              />
+            </div>
+
+            <div class="field">
+              <span class="field__label" id="size-label">Longest edge</span>
+              <div class="segmented" role="radiogroup" aria-labelledby="size-label" id="size-group"></div>
+            </div>
+
+            <div class="field">
+              <label class="field__label" for="fps-input">
+                Frame rate <span class="field__hint">used by the frame-step buttons</span>
+              </label>
+              <div class="stepper">
+                <button type="button" class="stepper__btn" id="fps-minus" aria-label="Lower frame rate">−</button>
+                <input type="text" inputmode="decimal" id="fps-input" class="stepper__input" value="30" />
+                <button type="button" class="stepper__btn" id="fps-plus" aria-label="Raise frame rate">+</button>
+              </div>
+            </div>
+
+            <button type="button" class="btn btn--ghost" id="change-video">Use a different video</button>
+          </div>
+        </details>
+      </section>
+
+      <!-- ---------------------------------------------------------- -->
+      <!-- Gallery                                                     -->
+      <!-- ---------------------------------------------------------- -->
+      <section id="gallery-section" class="gallery-section" hidden aria-labelledby="gallery-title">
+        <div class="gallery-head">
+          <h2 class="gallery-head__title" id="gallery-title">
+            Frames <span class="pill" id="gallery-count">0</span>
+          </h2>
+          <button type="button" class="btn btn--small" id="select-all">Select all</button>
+        </div>
+        <p class="gallery-head__hint" id="gallery-hint">Tap a frame to select it.</p>
+        <ul class="gallery" id="gallery"></ul>
+        <div class="gallery-actions">
+          <button type="button" class="btn btn--small btn--danger" id="delete-selected">Delete selected</button>
+          <button type="button" class="btn btn--small btn--ghost" id="clear-all">Clear all</button>
+        </div>
+      </section>
+    </main>
+
+    <!-- Sticky export bar -->
+    <div class="dock" id="dock" hidden>
+      <button type="button" class="btn btn--accent btn--dock" id="download-zip">
+        <span id="download-label">Download all</span>
+      </button>
+    </div>
+
+    <!-- Blocking-looking, but never actually blocking: cancel is always live -->
+    <div class="overlay" id="progress-overlay" hidden role="dialog" aria-modal="true" aria-labelledby="progress-label">
+      <div class="overlay__card">
+        <p class="overlay__label" id="progress-label" aria-live="polite">Extracting…</p>
+        <div class="overlay__track">
+          <div class="overlay__bar" id="progress-bar"></div>
+        </div>
+        <p class="overlay__detail" id="progress-detail">0 of 0</p>
+        <button type="button" class="btn btn--danger btn--jumbo" id="cancel-btn">Stop</button>
+      </div>
+    </div>
+
+    <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>
