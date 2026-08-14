@@ -6,6 +6,7 @@
  * network, and nothing is persisted — see `lib/settings.ts`.
  */
 
+import { buildConsensusCrop, type ConsensusCrop } from '../lib/crop.js';
 import { IMAGE_FORMATS, formatBytes, formatById } from '../lib/format.js';
 import { frameFileName, sanitizeBaseName, uniqueName, zipFileName } from '../lib/naming.js';
 import { MAX_PLAN_FRAMES, buildPlan, describePlan } from '../lib/plan.js';
@@ -35,8 +36,16 @@ import {
   type VideoLike,
   createCanvasRenderer,
   extractFrames,
+  sampleVoids,
   seekTo,
 } from './extractor.js';
+
+/** How many frames to sample across the clip when detecting black bars. */
+const CROP_SAMPLE_COUNT = 12;
+/** Longest edge of the crop preview thumbnail. */
+const CROP_PREVIEW_MAX_EDGE = 240;
+/** Per-side spread (native px) across samples worth calling out as "varies by scene". */
+const CROP_SPREAD_NOTABLE_PX = 12;
 
 export type ShareOutcome = 'shared' | 'cancelled' | 'unsupported';
 
@@ -121,6 +130,11 @@ export function createApp(deps: UiDeps): AppHandle {
     quality: must<HTMLInputElement>(doc, 'quality'),
     qualityValue: must<HTMLElement>(doc, 'quality-value'),
     sizeGroup: must<HTMLElement>(doc, 'size-group'),
+    cropDetectBtn: must<HTMLButtonElement>(doc, 'crop-detect-btn'),
+    cropClearBtn: must<HTMLButtonElement>(doc, 'crop-clear-btn'),
+    cropPreview: must<HTMLElement>(doc, 'crop-preview'),
+    cropPreviewImg: must<HTMLImageElement>(doc, 'crop-preview-img'),
+    cropPreviewCaption: must<HTMLElement>(doc, 'crop-preview-caption'),
     fpsInput: must<HTMLInputElement>(doc, 'fps-input'),
     fpsMinus: must<HTMLButtonElement>(doc, 'fps-minus'),
     fpsPlus: must<HTMLButtonElement>(doc, 'fps-plus'),
@@ -146,6 +160,7 @@ export function createApp(deps: UiDeps): AppHandle {
   const video = el.video as unknown as VideoLike & HTMLVideoElement;
   const cleanups: Array<() => void> = [];
   let sourceUrl: string | null = null;
+  let cropPreviewUrl: string | null = null;
   let baseName = 'frame';
   let busy: Promise<void> = Promise.resolve();
   let abort: AbortController | null = null;
@@ -263,6 +278,7 @@ export function createApp(deps: UiDeps): AppHandle {
     el.modeCount.setAttribute('aria-checked', isInterval ? 'false' : 'true');
 
     renderRange();
+    renderCrop();
     renderPlanSummary();
   }
 
@@ -277,6 +293,19 @@ export function createApp(deps: UiDeps): AppHandle {
     el.rangeEndTime.textContent = hasEnd ? formatTimecode(settings.rangeEnd) : 'End of clip';
     el.rangeReset.hidden = settings.rangeStart === 0 && !hasEnd;
     el.rangeEndBtn.classList.toggle('is-invalid', !isRangeValid());
+  }
+
+  function renderCrop(): void {
+    el.cropClearBtn.hidden = !settings.crop;
+    el.cropPreview.hidden = !cropPreviewUrl;
+  }
+
+  /** Output frame size given the current crop and longest-edge setting. */
+  function outputSize(): { width: number; height: number } {
+    const source = settings.crop
+      ? { width: settings.crop.width, height: settings.crop.height }
+      : { width: video.videoWidth, height: video.videoHeight };
+    return fitToMaxEdge(source, settings.maxEdge);
   }
 
   function currentPlan(): ReturnType<typeof buildPlan> {
@@ -309,10 +338,7 @@ export function createApp(deps: UiDeps): AppHandle {
       el.autoBtn.disabled = true;
       return;
     }
-    const size = fitToMaxEdge(
-      { width: video.videoWidth, height: video.videoHeight },
-      settings.maxEdge,
-    );
+    const size = outputSize();
     const dims = size.width > 0 ? ` · ${size.width}×${size.height}` : '';
     el.planSummary.textContent = `${describePlan(plan)}${dims}`;
     el.autoBtn.disabled = false;
@@ -406,16 +432,26 @@ export function createApp(deps: UiDeps): AppHandle {
     }
   }
 
+  function releaseCropPreview(): void {
+    if (cropPreviewUrl) {
+      deps.revokeObjectURL(cropPreviewUrl);
+      cropPreviewUrl = null;
+    }
+    el.cropPreviewImg.removeAttribute('src');
+  }
+
   function loadFile(file: File): void {
     clearError();
     releaseSource();
     sourceUrl = deps.createObjectURL(file);
     baseName = sanitizeBaseName(file.name);
-    // A trim range is a property of the clip it was set on, not a lasting
-    // preference — carrying it into an unrelated video would silently clip
-    // it in a way the user never asked for.
+    // A trim range and a detected crop are both properties of the clip they
+    // were set on, not a lasting preference — carrying either into an
+    // unrelated video would silently clip it in a way the user never asked for.
     settings.rangeStart = 0;
     settings.rangeEnd = 0;
+    settings.crop = null;
+    releaseCropPreview();
     video.src = sourceUrl;
     try {
       video.load();
@@ -550,6 +586,7 @@ export function createApp(deps: UiDeps): AppHandle {
       quality: settings.quality,
       maxEdge,
       ...(deps.createCanvas ? { createCanvas: deps.createCanvas } : {}),
+      ...(settings.crop ? { crop: settings.crop } : {}),
     });
   }
 
@@ -683,6 +720,137 @@ export function createApp(deps: UiDeps): AppHandle {
 
   on(el.autoBtn, 'click', () => {
     void track(runExtraction);
+  });
+
+  /* ---------------------------------------------------------------- */
+  /* Crop                                                              */
+  /* ---------------------------------------------------------------- */
+
+  /** Render one cropped frame as a small preview, via the exact renderer real captures use. */
+  async function renderCropPreview(consensus: ConsensusCrop): Promise<void> {
+    if (!consensus.crop) return;
+    try {
+      const renderer = makeRenderer(CROP_PREVIEW_MAX_EDGE);
+      const { blob } = await renderer.render(video);
+      releaseCropPreview();
+      cropPreviewUrl = deps.createObjectURL(blob);
+      el.cropPreviewImg.src = cropPreviewUrl;
+      el.cropPreviewCaption.textContent = describeCropCaption(
+        consensus,
+        video.videoWidth,
+        video.videoHeight,
+      );
+    } catch {
+      // The preview is a nice-to-have; a failure here doesn't affect the crop
+      // itself, which is already applied to real captures.
+      releaseCropPreview();
+    }
+  }
+
+  function describeCropCaption(
+    consensus: ConsensusCrop,
+    nativeWidth: number,
+    nativeHeight: number,
+  ): string {
+    const crop = consensus.crop;
+    if (!crop) return 'No black bars found';
+
+    const top = crop.y;
+    const left = crop.x;
+    const bottom = nativeHeight - crop.height - crop.y;
+    const right = nativeWidth - crop.width - crop.x;
+
+    const bits: string[] = [];
+    if (top > 0 || bottom > 0) {
+      bits.push(top === bottom ? `${top}px top/bottom` : `${top}px top, ${bottom}px bottom`);
+    }
+    if (left > 0 || right > 0) {
+      bits.push(left === right ? `${left}px left/right` : `${left}px left, ${right}px right`);
+    }
+
+    // Bars that measure noticeably differently frame to frame usually mean
+    // something (e.g. burned-in subtitles) lives inside them.
+    const varies = (['top', 'bottom', 'left', 'right'] as const).some(
+      (side) => consensus.spreadPx[side] >= CROP_SPREAD_NOTABLE_PX,
+    );
+
+    const trimmed = bits.length > 0 ? `Trimmed ${bits.join(' · ')}` : 'Trimmed';
+    return `${trimmed} · ${crop.width}×${crop.height}${varies ? ' · varies by scene' : ''}`;
+  }
+
+  async function runDetectCrop(): Promise<void> {
+    const plan = buildPlan({
+      mode: 'count',
+      duration: Number.isFinite(video.duration) ? video.duration : 0,
+      count: CROP_SAMPLE_COUNT,
+      fps: settings.fps,
+    });
+    if (plan.times.length === 0) {
+      toast('Load a video first');
+      return;
+    }
+
+    const resumeAt = video.currentTime;
+    abort = new AbortController();
+    openOverlay('Checking for black bars…');
+    setProgress(0, plan.times.length);
+    el.cropDetectBtn.disabled = true;
+
+    try {
+      const sampled = await sampleVoids({
+        video,
+        times: plan.times,
+        signal: abort.signal,
+        timers,
+        ...(deps.createCanvas ? { createCanvas: deps.createCanvas } : {}),
+        ...(deps.yieldToUi ? { yieldToUi: deps.yieldToUi } : {}),
+        onProgress: (progress) => setProgress(progress.completed, progress.total),
+      });
+
+      if (sampled.cancelled) {
+        toast('Detection cancelled');
+        return;
+      }
+
+      const consensus = buildConsensusCrop(sampled.results, {
+        width: video.videoWidth,
+        height: video.videoHeight,
+      });
+
+      if (!consensus.hasVoid || !consensus.crop) {
+        settings.crop = null;
+        releaseCropPreview();
+        toast('No black bars found');
+        return;
+      }
+
+      settings.crop = consensus.crop;
+      await renderCropPreview(consensus);
+      toast('Black bars removed');
+    } catch (error) {
+      toast(error instanceof Error ? error.message : 'Could not check for black bars');
+    } finally {
+      abort = null;
+      closeOverlay();
+      el.cropDetectBtn.disabled = false;
+      try {
+        await seekTo(video, resumeAt, { timers, timeoutMs: 2000 });
+      } catch {
+        // Not worth surfacing — detection already finished either way.
+      }
+      renderSettings();
+    }
+  }
+
+  on(el.cropDetectBtn, 'click', () => {
+    void track(runDetectCrop);
+  });
+
+  on(el.cropClearBtn, 'click', () => {
+    settings.crop = null;
+    releaseCropPreview();
+    renderSettings();
+    toast('Crop removed');
   });
 
   /* ---------------------------------------------------------------- */
@@ -860,6 +1028,7 @@ export function createApp(deps: UiDeps): AppHandle {
     destroy(): void {
       abort?.abort();
       releaseSource();
+      releaseCropPreview();
       store.clear();
       for (const cleanup of cleanups) cleanup();
       cleanups.length = 0;

@@ -7,6 +7,7 @@
  * then they're gone.
  */
 
+import type { CropRect } from './detect.js';
 import { DEFAULT_FORMAT_ID, DEFAULT_QUALITY, MAX_QUALITY, MIN_QUALITY } from './format.js';
 import { DEFAULT_MAX_EDGE } from './scale.js';
 import { DEFAULT_FPS, clamp, normalizeFps } from './time.js';
@@ -24,6 +25,8 @@ export interface Settings {
   /** Clip trim in seconds for batch extraction. 0/0 means "the whole clip". */
   rangeStart: number;
   rangeEnd: number;
+  /** Auto-detected crop applied to every capture, in native video pixel space. Null = no crop. */
+  crop: CropRect | null;
 }
 
 export const DEFAULT_SETTINGS: Readonly<Settings> = Object.freeze({
@@ -36,6 +39,7 @@ export const DEFAULT_SETTINGS: Readonly<Settings> = Object.freeze({
   frameCount: 24,
   rangeStart: 0,
   rangeEnd: 0,
+  crop: null as CropRect | null,
 });
 
 export const MIN_INTERVAL_SECONDS = 0.05;
@@ -73,6 +77,8 @@ export function normalizeSettings(input: unknown): Settings {
     // only rule out negative numbers.
     rangeStart: Math.max(0, toNumber(raw.rangeStart, DEFAULT_SETTINGS.rangeStart)),
     rangeEnd: Math.max(0, toNumber(raw.rangeEnd, DEFAULT_SETTINGS.rangeEnd)),
+    // Computed by the detector, not user input — passed through as-is.
+    crop: (raw.crop as CropRect | null | undefined) ?? null,
   };
 }
 
