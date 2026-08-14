@@ -21,6 +21,9 @@ export interface Settings {
   mode: ExtractMode;
   intervalSeconds: number;
   frameCount: number;
+  /** Clip trim in seconds for batch extraction. 0/0 means "the whole clip". */
+  rangeStart: number;
+  rangeEnd: number;
 }
 
 export const DEFAULT_SETTINGS: Readonly<Settings> = Object.freeze({
@@ -31,6 +34,8 @@ export const DEFAULT_SETTINGS: Readonly<Settings> = Object.freeze({
   mode: 'interval' as ExtractMode,
   intervalSeconds: 1,
   frameCount: 24,
+  rangeStart: 0,
+  rangeEnd: 0,
 });
 
 export const MIN_INTERVAL_SECONDS = 0.05;
@@ -63,6 +68,11 @@ export function normalizeSettings(input: unknown): Settings {
     frameCount: Math.round(
       clamp(toNumber(raw.frameCount, DEFAULT_SETTINGS.frameCount), MIN_FRAME_COUNT, MAX_FRAME_COUNT),
     ),
+    // Clamping to the clip's actual duration happens where the duration is
+    // known (the UI, when the value is set from the scrubber); here we can
+    // only rule out negative numbers.
+    rangeStart: Math.max(0, toNumber(raw.rangeStart, DEFAULT_SETTINGS.rangeStart)),
+    rangeEnd: Math.max(0, toNumber(raw.rangeEnd, DEFAULT_SETTINGS.rangeEnd)),
   };
 }
 

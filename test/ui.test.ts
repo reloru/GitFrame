@@ -354,6 +354,112 @@ describe('settings', () => {
   });
 });
 
+describe('clip range', () => {
+  let h: Harness;
+  beforeEach(async () => {
+    h = setup({ duration: 10 });
+    await h.loadVideo();
+  });
+
+  function scrubTo(seconds: number): void {
+    const scrub = h.el<HTMLInputElement>('scrub');
+    scrub.value = String(seconds);
+    scrub.dispatchEvent(new Event('input'));
+    scrub.dispatchEvent(new Event('change'));
+  }
+
+  it('defaults to the whole clip', () => {
+    expect(h.app.settings.rangeStart).toBe(0);
+    expect(h.app.settings.rangeEnd).toBe(0);
+    expect(h.el('range-start-time').textContent).toBe('0:00.000');
+    expect(h.el('range-end-time').textContent).toBe('End of clip');
+    expect(h.el<HTMLButtonElement>('range-reset').hidden).toBe(true);
+  });
+
+  it('sets the start from wherever the scrubber currently is', () => {
+    scrubTo(3);
+    h.click('range-start-btn');
+
+    expect(h.app.settings.rangeStart).toBe(3);
+    expect(h.el('range-start-time').textContent).toBe('0:03.000');
+    expect(h.el<HTMLButtonElement>('range-reset').hidden).toBe(false);
+  });
+
+  it('sets the end from wherever the scrubber currently is', () => {
+    scrubTo(7);
+    h.click('range-end-btn');
+
+    expect(h.app.settings.rangeEnd).toBe(7);
+    expect(h.el('range-end-time').textContent).toBe('0:07.000');
+  });
+
+  it('shrinks the plan to the chosen span', () => {
+    scrubTo(2);
+    h.click('range-start-btn');
+    scrubTo(5);
+    h.click('range-end-btn');
+
+    // 1s interval over a 3s span -> 3 frames, not the 10 the full clip gives.
+    expect(h.el('plan-summary').textContent).toContain('3 frames');
+  });
+
+  it('flags an inverted range instead of silently discarding a side', () => {
+    scrubTo(5);
+    h.click('range-end-btn');
+    scrubTo(7);
+    h.click('range-start-btn');
+
+    // Both taps are honoured — nothing gets quietly reset behind the user's back.
+    expect(h.app.settings.rangeStart).toBe(7);
+    expect(h.app.settings.rangeEnd).toBe(5);
+    expect(h.el('plan-summary').textContent).toBe('Start must be before end');
+    expect(h.el<HTMLButtonElement>('auto-btn').disabled).toBe(true);
+    expect(h.el('range-end-btn').classList.contains('is-invalid')).toBe(true);
+  });
+
+  it('resets to the whole clip', () => {
+    scrubTo(2);
+    h.click('range-start-btn');
+    scrubTo(8);
+    h.click('range-end-btn');
+
+    h.click('range-reset');
+
+    expect(h.app.settings.rangeStart).toBe(0);
+    expect(h.app.settings.rangeEnd).toBe(0);
+    expect(h.el('range-start-time').textContent).toBe('0:00.000');
+    expect(h.el('range-end-time').textContent).toBe('End of clip');
+    expect(h.el<HTMLButtonElement>('range-reset').hidden).toBe(true);
+  });
+
+  it('confines a batch extraction to the chosen span', async () => {
+    scrubTo(2);
+    h.click('range-start-btn');
+    scrubTo(5);
+    h.click('range-end-btn');
+
+    h.click('auto-btn');
+    await h.app.whenIdle();
+
+    expect(h.app.store.count).toBe(3);
+    for (const frame of h.app.store.all) {
+      expect(frame.time).toBeGreaterThanOrEqual(2);
+      expect(frame.time).toBeLessThan(5);
+    }
+  });
+
+  it('clears a previously set range when a different video is loaded', async () => {
+    scrubTo(3);
+    h.click('range-start-btn');
+    expect(h.app.settings.rangeStart).toBe(3);
+
+    await h.loadVideo('another.mp4');
+
+    expect(h.app.settings.rangeStart).toBe(0);
+    expect(h.app.settings.rangeEnd).toBe(0);
+  });
+});
+
 describe('grabbing a single frame', () => {
   let h: Harness;
   beforeEach(async () => {

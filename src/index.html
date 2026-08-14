@@ -116,6 +116,24 @@
         <details class="panel" id="auto-panel" open>
           <summary class="panel__summary">Extract many frames</summary>
           <div class="panel__body">
+            <div class="field">
+              <span class="field__label">Range</span>
+              <div class="range-picker">
+                <button type="button" class="range-picker__btn" id="range-start-btn">
+                  <span class="range-picker__tag">Set start</span>
+                  <span class="range-picker__time" id="range-start-time">0:00.000</span>
+                </button>
+                <span class="range-picker__arrow" aria-hidden="true">–</span>
+                <button type="button" class="range-picker__btn" id="range-end-btn">
+                  <span class="range-picker__tag">Set end</span>
+                  <span class="range-picker__time" id="range-end-time">End of clip</span>
+                </button>
+              </div>
+              <button type="button" class="btn btn--ghost btn--small" id="range-reset" hidden>
+                Use whole clip
+              </button>
+            </div>
+
             <div class="segmented" role="radiogroup" aria-label="Extraction mode">
               <button type="button" class="segmented__btn is-active" id="mode-interval" role="radio" aria-checked="true">
                 Every N sec

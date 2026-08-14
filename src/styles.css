@@ -451,6 +451,77 @@ main {
   font-size: 13px;
 }
 
+/* Range picker — tap "Set start"/"Set end" to mark the scrubber's position */
+.range-picker {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+}
+
+.range-picker__btn {
+  -webkit-appearance: none;
+  appearance: none;
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: var(--tap);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+  border-radius: var(--radius);
+  color: var(--text);
+  font-family: inherit;
+  cursor: pointer;
+  touch-action: manipulation;
+  padding: 4px 6px;
+}
+
+.range-picker__btn:active {
+  background: var(--line);
+}
+
+.range-picker__btn:focus-visible {
+  outline: 3px solid var(--primary);
+  outline-offset: 2px;
+}
+
+.range-picker__tag {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.range-picker__time {
+  font-size: 15px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+
+.range-picker__arrow {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  color: var(--muted);
+  font-size: 15px;
+}
+
+.range-picker__btn.is-invalid {
+  border-color: var(--danger);
+}
+
+.range-picker__btn.is-invalid .range-picker__time {
+  color: var(--danger);
+}
+
 /* Segmented control — each option is a full-height tap target */
 .segmented {
   display: flex;
