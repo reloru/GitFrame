@@ -322,6 +322,8 @@ describe('settings', () => {
     const settings = createSettings();
     expect(settings.formatId).toBe(DEFAULT_SETTINGS.formatId);
     expect(settings.mode).toBe('interval');
+    expect(settings.rangeStart).toBe(0);
+    expect(settings.rangeEnd).toBe(0);
   });
 
   it('applies overrides', () => {
@@ -355,5 +357,18 @@ describe('settings', () => {
 
   it('keeps count mode when asked', () => {
     expect(normalizeSettings({ mode: 'count' }).mode).toBe('count');
+  });
+
+  it('carries a trim range through and rejects negative values', () => {
+    expect(normalizeSettings({ rangeStart: 5, rangeEnd: 20 })).toMatchObject({
+      rangeStart: 5,
+      rangeEnd: 20,
+    });
+    expect(normalizeSettings({ rangeStart: -5, rangeEnd: -1 })).toMatchObject({
+      rangeStart: 0,
+      rangeEnd: 0,
+    });
+    expect(normalizeSettings({}).rangeStart).toBe(0);
+    expect(normalizeSettings({}).rangeEnd).toBe(0);
   });
 });

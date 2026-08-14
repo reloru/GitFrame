@@ -99,6 +99,11 @@ export function createApp(deps: UiDeps): AppHandle {
     fwdFrame: must<HTMLButtonElement>(doc, 'fwd-frame'),
     fwdSecond: must<HTMLButtonElement>(doc, 'fwd-second'),
     grabBtn: must<HTMLButtonElement>(doc, 'grab-btn'),
+    rangeStartBtn: must<HTMLButtonElement>(doc, 'range-start-btn'),
+    rangeEndBtn: must<HTMLButtonElement>(doc, 'range-end-btn'),
+    rangeStartTime: must<HTMLElement>(doc, 'range-start-time'),
+    rangeEndTime: must<HTMLElement>(doc, 'range-end-time'),
+    rangeReset: must<HTMLButtonElement>(doc, 'range-reset'),
     modeInterval: must<HTMLButtonElement>(doc, 'mode-interval'),
     modeCount: must<HTMLButtonElement>(doc, 'mode-count'),
     intervalField: must<HTMLElement>(doc, 'interval-field'),
@@ -257,13 +262,29 @@ export function createApp(deps: UiDeps): AppHandle {
     el.modeInterval.setAttribute('aria-checked', isInterval ? 'true' : 'false');
     el.modeCount.setAttribute('aria-checked', isInterval ? 'false' : 'true');
 
+    renderRange();
     renderPlanSummary();
+  }
+
+  /** Whether the range fields describe a usable (non-empty, ordered) span. */
+  function isRangeValid(): boolean {
+    return settings.rangeEnd <= 0 || settings.rangeStart < settings.rangeEnd;
+  }
+
+  function renderRange(): void {
+    el.rangeStartTime.textContent = formatTimecode(settings.rangeStart);
+    const hasEnd = settings.rangeEnd > 0;
+    el.rangeEndTime.textContent = hasEnd ? formatTimecode(settings.rangeEnd) : 'End of clip';
+    el.rangeReset.hidden = settings.rangeStart === 0 && !hasEnd;
+    el.rangeEndBtn.classList.toggle('is-invalid', !isRangeValid());
   }
 
   function currentPlan(): ReturnType<typeof buildPlan> {
     return buildPlan({
       mode: settings.mode,
       duration: Number.isFinite(video.duration) ? video.duration : 0,
+      start: settings.rangeStart,
+      end: settings.rangeEnd,
       intervalSeconds: settings.intervalSeconds,
       count: settings.frameCount,
       fps: settings.fps,
@@ -272,9 +293,19 @@ export function createApp(deps: UiDeps): AppHandle {
   }
 
   function renderPlanSummary(): void {
+    if (!Number.isFinite(video.duration) || video.duration <= 0) {
+      el.planSummary.textContent = 'Load a video first';
+      el.autoBtn.disabled = true;
+      return;
+    }
+    if (!isRangeValid()) {
+      el.planSummary.textContent = 'Start must be before end';
+      el.autoBtn.disabled = true;
+      return;
+    }
     const plan = currentPlan();
     if (plan.times.length === 0) {
-      el.planSummary.textContent = video.duration > 0 ? 'Nothing to extract' : 'Load a video first';
+      el.planSummary.textContent = 'Nothing to extract';
       el.autoBtn.disabled = true;
       return;
     }
@@ -380,6 +411,11 @@ export function createApp(deps: UiDeps): AppHandle {
     releaseSource();
     sourceUrl = deps.createObjectURL(file);
     baseName = sanitizeBaseName(file.name);
+    // A trim range is a property of the clip it was set on, not a lasting
+    // preference — carrying it into an unrelated video would silently clip
+    // it in a way the user never asked for.
+    settings.rangeStart = 0;
+    settings.rangeEnd = 0;
     video.src = sourceUrl;
     try {
       video.load();
@@ -565,6 +601,22 @@ export function createApp(deps: UiDeps): AppHandle {
 
   on(el.grabBtn, 'click', () => {
     void track(grabCurrentFrame);
+  });
+
+  on(el.rangeStartBtn, 'click', () => {
+    settings.rangeStart = clamp(video.currentTime, 0, Number.isFinite(video.duration) ? video.duration : 0);
+    renderSettings();
+  });
+
+  on(el.rangeEndBtn, 'click', () => {
+    settings.rangeEnd = clamp(video.currentTime, 0, Number.isFinite(video.duration) ? video.duration : 0);
+    renderSettings();
+  });
+
+  on(el.rangeReset, 'click', () => {
+    settings.rangeStart = 0;
+    settings.rangeEnd = 0;
+    renderSettings();
   });
 
   async function runExtraction(): Promise<void> {
