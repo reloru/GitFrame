@@ -209,6 +209,22 @@
               <div class="segmented" role="radiogroup" aria-labelledby="size-label" id="size-group"></div>
             </div>
 
+            <div class="field" id="crop-field">
+              <span class="field__label">Crop</span>
+              <div class="crop-control">
+                <button type="button" class="btn btn--small" id="crop-detect-btn">
+                  Detect black bars
+                </button>
+                <button type="button" class="btn btn--small btn--ghost" id="crop-clear-btn" hidden>
+                  Remove crop
+                </button>
+              </div>
+              <div class="crop-preview" id="crop-preview" hidden>
+                <img class="crop-preview__img" id="crop-preview-img" alt="Preview of the cropped frame" />
+                <p class="crop-preview__caption" id="crop-preview-caption"></p>
+              </div>
+            </div>
+
             <div class="field">
               <label class="field__label" for="fps-input">
                 Frame rate <span class="field__hint">used by the frame-step buttons</span>

@@ -522,6 +522,42 @@ main {
   color: var(--danger);
 }
 
+/* Crop — auto-detect only, no drag handles: the one-tap version of a manual
+   crop tool, matching the rest of the app's "no precise dragging" rule. */
+.crop-control {
+  display: flex;
+  gap: 8px;
+}
+
+.crop-control .btn {
+  flex: 1 1 0;
+}
+
+.crop-preview {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 10px;
+}
+
+.crop-preview__img {
+  flex: 0 0 auto;
+  width: 96px;
+  height: 54px;
+  object-fit: cover;
+  border-radius: 8px;
+  background: #000;
+}
+
+.crop-preview__caption {
+  margin: 0;
+  font-size: 14px;
+  color: var(--muted);
+}
+
 /* Segmented control — each option is a full-height tap target */
 .segmented {
   display: flex;

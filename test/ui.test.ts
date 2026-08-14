@@ -460,6 +460,146 @@ describe('clip range', () => {
   });
 });
 
+/** Black top/bottom bars over high-variance "content", as fractions of height. */
+function letterboxImage(width: number, height: number, topFrac: number, bottomFrac: number) {
+  const top = Math.round(height * topFrac);
+  const bottom = Math.round(height * bottomFrac);
+  const data = new Uint8ClampedArray(width * height * 4);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const o = (y * width + x) * 4;
+      const inBar = y < top || y >= height - bottom;
+      data[o] = inBar ? 0 : (x * 53 + y * 97) % 256;
+      data[o + 1] = inBar ? 0 : (x * 29 + y * 61) % 256;
+      data[o + 2] = inBar ? 0 : (x * 83 + y * 13) % 256;
+      data[o + 3] = 255;
+    }
+  }
+  return { data, width, height };
+}
+
+/** High-variance "content" filling the whole frame — no bars anywhere. */
+function busyImage(width: number, height: number) {
+  const data = new Uint8ClampedArray(width * height * 4);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const o = (y * width + x) * 4;
+      data[o] = (x * 53 + y * 97) % 256;
+      data[o + 1] = (x * 29 + y * 61) % 256;
+      data[o + 2] = (x * 83 + y * 13) % 256;
+      data[o + 3] = 255;
+    }
+  }
+  return { data, width, height };
+}
+
+describe('crop', () => {
+  let h: Harness;
+  beforeEach(async () => {
+    h = setup({ duration: 10 });
+    await h.loadVideo();
+  });
+
+  it('has no crop applied by default', () => {
+    expect(h.app.settings.crop).toBeNull();
+    expect(h.el<HTMLButtonElement>('crop-clear-btn').hidden).toBe(true);
+    expect(h.el('crop-preview').hidden).toBe(true);
+  });
+
+  it('detects a letterboxed clip and applies the crop to real captures', async () => {
+    h.canvas.context.imageData = (_sx, _sy, w, hh) => letterboxImage(w, hh, 0.2, 0.2);
+
+    h.click('crop-detect-btn');
+    await h.app.whenIdle();
+
+    // 20% top/bottom bars on a 1080-tall source trim to roughly 60% of that,
+    // allowing for rounding through the downscaled analysis pass.
+    const crop = h.app.settings.crop;
+    expect(crop).not.toBeNull();
+    expect(crop!.width).toBe(1920);
+    expect(crop!.height).toBeGreaterThan(600);
+    expect(crop!.height).toBeLessThan(700);
+    expect(crop!.x).toBe(0);
+
+    expect(h.el<HTMLButtonElement>('crop-clear-btn').hidden).toBe(false);
+    expect(h.el('crop-preview').hidden).toBe(false);
+    expect(h.el('crop-preview-img').getAttribute('src')).toBeTruthy();
+    expect(h.el('crop-preview-caption').textContent).toContain('Trimmed');
+    expect(h.el('toast').textContent).toBe('Black bars removed');
+
+    // The crop must actually reach a real capture, not just settings.
+    h.click('grab-btn');
+    await h.app.whenIdle();
+    const frame = h.app.store.all[0]!;
+    expect(frame.width).toBe(crop!.width);
+    expect(frame.height).toBe(crop!.height);
+  });
+
+  it('reports no black bars for a clip that already fills the frame', async () => {
+    h.canvas.context.imageData = (_sx, _sy, w, hh) => busyImage(w, hh);
+
+    h.click('crop-detect-btn');
+    await h.app.whenIdle();
+
+    expect(h.app.settings.crop).toBeNull();
+    expect(h.el<HTMLButtonElement>('crop-clear-btn').hidden).toBe(true);
+    expect(h.el('toast').textContent).toBe('No black bars found');
+  });
+
+  it('lets a detected crop be removed', async () => {
+    h.canvas.context.imageData = (_sx, _sy, w, hh) => letterboxImage(w, hh, 0.2, 0.2);
+    h.click('crop-detect-btn');
+    await h.app.whenIdle();
+    expect(h.app.settings.crop).not.toBeNull();
+
+    h.click('crop-clear-btn');
+
+    expect(h.app.settings.crop).toBeNull();
+    expect(h.el<HTMLButtonElement>('crop-clear-btn').hidden).toBe(true);
+    expect(h.el('crop-preview').hidden).toBe(true);
+    expect(h.el('toast').textContent).toBe('Crop removed');
+  });
+
+  it('can be cancelled mid-detection without applying anything', async () => {
+    const stalling = setup({ duration: 10, stall: true });
+    await stalling.loadVideo();
+
+    stalling.click('crop-detect-btn');
+    await tick();
+    expect(stalling.el('progress-overlay').hidden).toBe(false);
+    stalling.click('cancel-btn');
+    await stalling.app.whenIdle();
+
+    expect(stalling.app.settings.crop).toBeNull();
+    expect(stalling.el('toast').textContent).toBe('Detection cancelled');
+    expect(stalling.el('progress-overlay').hidden).toBe(true);
+    expect(stalling.el<HTMLButtonElement>('crop-detect-btn').disabled).toBe(false);
+  });
+
+  it('restores the playhead after detecting', async () => {
+    h.canvas.context.imageData = (_sx, _sy, w, hh) => letterboxImage(w, hh, 0.1, 0.1);
+    h.click('fwd-second');
+    const before = h.el<HTMLVideoElement>('video').currentTime;
+
+    h.click('crop-detect-btn');
+    await h.app.whenIdle();
+
+    expect(h.el<HTMLVideoElement>('video').currentTime).toBeCloseTo(before, 5);
+  });
+
+  it('clears a detected crop when a different video is loaded', async () => {
+    h.canvas.context.imageData = (_sx, _sy, w, hh) => letterboxImage(w, hh, 0.2, 0.2);
+    h.click('crop-detect-btn');
+    await h.app.whenIdle();
+    expect(h.app.settings.crop).not.toBeNull();
+
+    await h.loadVideo('another.mp4');
+
+    expect(h.app.settings.crop).toBeNull();
+    expect(h.el('crop-preview').hidden).toBe(true);
+  });
+});
+
 describe('grabbing a single frame', () => {
   let h: Harness;
   beforeEach(async () => {

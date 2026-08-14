@@ -10,6 +10,7 @@
  *     button stay live while a few hundred frames are pulled.
  */
 
+import { cropRect, detectVoidsAuto, type CropRect, type RGBAImage, type VoidResultAuto } from '../lib/detect.js';
 import type { ImageFormat } from '../lib/format.js';
 import { qualityFor } from '../lib/format.js';
 import { fitToMaxEdge, type Size } from '../lib/scale.js';
@@ -200,7 +201,20 @@ export async function seekTo(
 export interface Canvas2dLike {
   imageSmoothingEnabled: boolean;
   drawImage(source: never, dx: number, dy: number, dw: number, dh: number): void;
+  /** Draws only the [sx,sy,sw,sh] source rectangle — how a crop gets applied. */
+  drawImage(
+    source: never,
+    sx: number,
+    sy: number,
+    sw: number,
+    sh: number,
+    dx: number,
+    dy: number,
+    dw: number,
+    dh: number,
+  ): void;
   clearRect(x: number, y: number, w: number, h: number): void;
+  getImageData(sx: number, sy: number, sw: number, sh: number): RGBAImage;
 }
 
 export interface CanvasLike {
@@ -224,6 +238,8 @@ export interface RendererOptions {
   readonly quality: number;
   readonly maxEdge: number;
   readonly createCanvas?: () => CanvasLike;
+  /** When set, only this source rectangle is drawn — e.g. to trim detected letterbox bars. */
+  readonly crop?: CropRect;
 }
 
 function defaultCanvasFactory(): CanvasLike {
@@ -240,13 +256,14 @@ export function createCanvasRenderer(options: RendererOptions): FrameRenderer {
   const factory = options.createCanvas ?? defaultCanvasFactory;
   const canvas = factory();
   const quality = qualityFor(options.format, options.quality);
+  const crop = options.crop;
 
   return {
     async render(video: VideoLike): Promise<RenderResult> {
-      const size = fitToMaxEdge(
-        { width: video.videoWidth, height: video.videoHeight },
-        options.maxEdge,
-      );
+      // maxEdge scales the POST-crop frame — a "1920 longest edge" setting
+      // should apply to the trimmed picture, not the original.
+      const sourceSize = crop ? { width: crop.width, height: crop.height } : { width: video.videoWidth, height: video.videoHeight };
+      const size = fitToMaxEdge(sourceSize, options.maxEdge);
       if (size.width <= 0 || size.height <= 0) {
         throw new Error('Video has no readable dimensions yet');
       }
@@ -258,7 +275,11 @@ export function createCanvasRenderer(options: RendererOptions): FrameRenderer {
 
       ctx.imageSmoothingEnabled = true;
       ctx.clearRect(0, 0, size.width, size.height);
-      ctx.drawImage(video as never, 0, 0, size.width, size.height);
+      if (crop) {
+        ctx.drawImage(video as never, crop.x, crop.y, crop.width, crop.height, 0, 0, size.width, size.height);
+      } else {
+        ctx.drawImage(video as never, 0, 0, size.width, size.height);
+      }
 
       const blob = await new Promise<Blob | null>((resolve) => {
         canvas.toBlob(resolve, options.format.mime, quality);
@@ -362,4 +383,124 @@ export async function extractFrames(options: ExtractOptions): Promise<ExtractRes
   }
 
   return { frames, failures, cancelled };
+}
+
+/* ------------------------------------------------------------------ */
+/* Letterbox / pillarbox detection                                     */
+/* ------------------------------------------------------------------ */
+
+export interface DetectVoidsOptions {
+  readonly video: VideoLike;
+  readonly times: readonly number[];
+  readonly signal?: AbortSignal;
+  readonly timers?: TimerLike;
+  readonly seekTimeoutMs?: number;
+  readonly createCanvas?: () => CanvasLike;
+  /** Hands control back to the browser between samples. */
+  readonly yieldToUi?: () => Promise<void>;
+  readonly onProgress?: (progress: { completed: number; total: number }) => void;
+}
+
+export interface DetectVoidsResult {
+  /** One entry per sample that was actually read; a failed seek is skipped, not recorded. */
+  readonly results: readonly VoidResultAuto[];
+  readonly cancelled: boolean;
+}
+
+/**
+ * Longest edge analyzed for void detection.
+ *
+ * A perfectly uniform frame is the algorithm's worst case — nothing ever
+ * triggers its early-exit, so it scans every row and column at all ten swept
+ * tolerances. At native 4K that measured over a second on a single sample in
+ * testing; a fade-to-black or cut lands on exactly that worst case. Bars are
+ * tens to hundreds of pixels wide at any real resolution, so measuring them on
+ * a downscaled proxy loses at most a pixel or two — well inside what the even-
+ * dimension rounding in buildConsensusCrop() already allows for — while making
+ * every sample's cost bounded regardless of source resolution or content.
+ */
+export const DETECTION_MAX_EDGE = 640;
+
+/** Scale a detection result computed on a downscaled proxy back to native pixels. */
+function scaleToNative(result: VoidResultAuto, native: Size, analysis: Size): VoidResultAuto {
+  const scaleX = native.width / analysis.width;
+  const scaleY = native.height / analysis.height;
+  const top = Math.round(result.top * scaleY);
+  const bottom = Math.round(result.bottom * scaleY);
+  const left = Math.round(result.left * scaleX);
+  const right = Math.round(result.right * scaleX);
+  return {
+    ...result,
+    width: native.width,
+    height: native.height,
+    top,
+    bottom,
+    left,
+    right,
+    crop: cropRect(native, { top, bottom, left, right }),
+    hasVoid: top + bottom + left + right > 0,
+  };
+}
+
+/**
+ * Sample stills across a clip and measure the blank bands in each.
+ *
+ * This answers "where are the bands in each of these frames" — one still at a
+ * time. Turning that into one crop for the whole clip (dropping degenerate
+ * frames, taking the minimum trim per side) is buildConsensusCrop()'s job in
+ * lib/crop.ts, not this function's: sampling here stays a plain seek-and-read
+ * loop, matching extractFrames' shape, so both are easy to reason about
+ * separately.
+ *
+ * A sample that fails to seek or decode is skipped rather than aborting the
+ * whole run — buildConsensusCrop() tolerates a reduced sample set, and even
+ * an empty one.
+ */
+export async function sampleVoids(options: DetectVoidsOptions): Promise<DetectVoidsResult> {
+  const factory = options.createCanvas ?? defaultCanvasFactory;
+  const canvas = factory();
+  const results: VoidResultAuto[] = [];
+  const total = options.times.length;
+  const yieldToUi = options.yieldToUi ?? defaultYield;
+  let cancelled = false;
+
+  for (let index = 0; index < total; index += 1) {
+    const time = options.times[index]!;
+    if (options.signal?.aborted) {
+      cancelled = true;
+      break;
+    }
+
+    try {
+      await seekTo(options.video, time, {
+        timeoutMs: options.seekTimeoutMs ?? DEFAULT_SEEK_TIMEOUT_MS,
+        timers: options.timers,
+        signal: options.signal,
+      });
+
+      const native = { width: options.video.videoWidth, height: options.video.videoHeight };
+      if (native.width > 0 && native.height > 0) {
+        const analysis = fitToMaxEdge(native, DETECTION_MAX_EDGE);
+        canvas.width = analysis.width;
+        canvas.height = analysis.height;
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          ctx.drawImage(options.video as never, 0, 0, analysis.width, analysis.height);
+          const raw = detectVoidsAuto(ctx.getImageData(0, 0, analysis.width, analysis.height));
+          results.push(scaleToNative(raw, native, analysis));
+        }
+      }
+    } catch (error) {
+      if (error instanceof CancelledError) {
+        cancelled = true;
+        break;
+      }
+      // Anything else (timeout, decode hiccup) — skip this sample and keep going.
+    }
+
+    options.onProgress?.({ completed: index + 1, total });
+    await yieldToUi();
+  }
+
+  return { results, cancelled };
 }

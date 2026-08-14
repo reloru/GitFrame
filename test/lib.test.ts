@@ -359,6 +359,12 @@ describe('settings', () => {
     expect(normalizeSettings({ mode: 'count' }).mode).toBe('count');
   });
 
+  it('defaults crop to null and passes an already-computed one through', () => {
+    expect(normalizeSettings({}).crop).toBeNull();
+    const crop = { x: 1, y: 2, width: 3, height: 4 };
+    expect(normalizeSettings({ crop }).crop).toEqual(crop);
+  });
+
   it('carries a trim range through and rejects negative values', () => {
     expect(normalizeSettings({ rangeStart: 5, rangeEnd: 20 })).toMatchObject({
       rangeStart: 5,
