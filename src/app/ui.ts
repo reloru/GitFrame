@@ -38,6 +38,13 @@ import {
   seekTo,
 } from './extractor.js';
 
+export type ShareOutcome = 'shared' | 'cancelled' | 'unsupported';
+
+export interface ShareCandidate {
+  readonly blob: Blob;
+  readonly filename: string;
+}
+
 export interface UiDeps {
   readonly document: Document;
   readonly createObjectURL: (blob: Blob) => string;
@@ -46,6 +53,12 @@ export interface UiDeps {
   readonly createCanvas?: () => CanvasLike;
   readonly timers?: TimerLike;
   readonly yieldToUi?: () => Promise<void>;
+  /**
+   * Hand frames to the OS share sheet (Save to Photos on iOS, etc). Optional
+   * because it has no jsdom equivalent; when omitted, or when it resolves
+   * 'unsupported', export falls back to a direct/zip download.
+   */
+  readonly shareFiles?: (files: readonly ShareCandidate[]) => Promise<ShareOutcome>;
 }
 
 export interface AppHandle {
@@ -710,6 +723,25 @@ export function createApp(deps: UiDeps): AppHandle {
     if (frames.length === 0) {
       toast('No frames to download');
       return;
+    }
+
+    // Try the OS share sheet first — on iOS this is what puts a single image
+    // one tap from Photos, and a whole batch behind "Save N Images" instead of
+    // landing silently in Files. Zipping would only get in the way here: a
+    // .zip isn't something iOS recognises as saveable to Photos.
+    if (deps.shareFiles) {
+      const outcome = await deps.shareFiles(
+        frames.map((frame, index) => ({
+          blob: frame.blob,
+          filename: exportNameFor(frame, index, frames.length),
+        })),
+      );
+      if (outcome === 'shared') {
+        toast(frames.length === 1 ? 'Shared 1 frame' : `Shared ${frames.length} frames`);
+        return;
+      }
+      if (outcome === 'cancelled') return;
+      // 'unsupported' falls through to the download path below.
     }
 
     if (frames.length === 1) {

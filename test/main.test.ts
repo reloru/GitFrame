@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { bootstrap, downloadBlob } from '../src/app/main.js';
+import { bootstrap, downloadBlob, shareFiles } from '../src/app/main.js';
 import { mountMarkup, patchVideo } from './helpers/dom.js';
 
 const originalCreate = URL.createObjectURL;
@@ -24,6 +24,10 @@ afterEach(() => {
   URL.createObjectURL = originalCreate;
   URL.revokeObjectURL = originalRevoke;
   vi.useRealTimers();
+  // jsdom has no Web Share API of its own; strip whatever a test attached to
+  // the shared navigator so it doesn't leak into the next one.
+  delete (navigator as unknown as Record<string, unknown>).share;
+  delete (navigator as unknown as Record<string, unknown>).canShare;
 });
 
 describe('downloadBlob', () => {
@@ -65,6 +69,89 @@ describe('downloadBlob', () => {
     expect(revoke).not.toHaveBeenCalled();
     vi.advanceTimersByTime(30_000);
     expect(revoke).toHaveBeenCalledWith('blob:download');
+  });
+});
+
+describe('shareFiles', () => {
+  const candidate = { blob: new Blob(['x'], { type: 'image/jpeg' }), filename: 'a.jpg' };
+
+  it('is unsupported when the browser has no Web Share API at all', async () => {
+    await expect(shareFiles([candidate])).resolves.toBe('unsupported');
+  });
+
+  it('is unsupported when share exists but canShare does not', async () => {
+    (navigator as unknown as { share: unknown }).share = vi.fn();
+    await expect(shareFiles([candidate])).resolves.toBe('unsupported');
+  });
+
+  it('is unsupported when canShare declines the payload', async () => {
+    (navigator as unknown as { canShare: unknown }).canShare = vi.fn(() => false);
+    (navigator as unknown as { share: unknown }).share = vi.fn();
+    await expect(shareFiles([candidate])).resolves.toBe('unsupported');
+    expect(navigator.share).not.toHaveBeenCalled();
+  });
+
+  it('is unsupported when canShare itself throws', async () => {
+    (navigator as unknown as { canShare: unknown }).canShare = vi.fn(() => {
+      throw new Error('nope');
+    });
+    (navigator as unknown as { share: unknown }).share = vi.fn();
+    await expect(shareFiles([candidate])).resolves.toBe('unsupported');
+  });
+
+  it('shares real File objects built from each blob', async () => {
+    const canShare = vi.fn((_data?: ShareData) => true);
+    const share = vi.fn((_data?: ShareData) => Promise.resolve());
+    (navigator as unknown as { canShare: unknown }).canShare = canShare;
+    (navigator as unknown as { share: unknown }).share = share;
+
+    await expect(
+      shareFiles([
+        candidate,
+        { blob: new Blob(['y'], { type: 'image/png' }), filename: 'b.png' },
+      ]),
+    ).resolves.toBe('shared');
+
+    const files = canShare.mock.calls[0]![0]!.files!;
+    expect(files).toHaveLength(2);
+    expect(files[0]!.name).toBe('a.jpg');
+    expect(files[0]!.type).toBe('image/jpeg');
+    expect(files[1]!.name).toBe('b.png');
+    // canShare and share must be asked about the exact same File objects.
+    expect(share.mock.calls[0]![0]!.files).toBe(files);
+  });
+
+  it('falls back to the octet-stream type when a blob has none', async () => {
+    (navigator as unknown as { canShare: unknown }).canShare = vi.fn((_data?: ShareData) => true);
+    const share = vi.fn((_data?: ShareData) => Promise.resolve());
+    (navigator as unknown as { share: unknown }).share = share;
+
+    await shareFiles([{ blob: new Blob(['x']), filename: 'blob.bin' }]);
+
+    const files = share.mock.calls[0]![0]!.files!;
+    expect(files[0]!.type).toBe('application/octet-stream');
+  });
+
+  it('reports a user-cancelled share sheet without falling back', async () => {
+    (navigator as unknown as { canShare: unknown }).canShare = vi.fn(() => true);
+    (navigator as unknown as { share: unknown }).share = vi.fn(() =>
+      Promise.reject(new DOMException('The user aborted a request.', 'AbortError')),
+    );
+    await expect(shareFiles([candidate])).resolves.toBe('cancelled');
+  });
+
+  it('treats any other share failure as unsupported so the caller can fall back', async () => {
+    (navigator as unknown as { canShare: unknown }).canShare = vi.fn(() => true);
+    (navigator as unknown as { share: unknown }).share = vi.fn(() =>
+      Promise.reject(new DOMException('Not allowed.', 'NotAllowedError')),
+    );
+    await expect(shareFiles([candidate])).resolves.toBe('unsupported');
+  });
+
+  it('treats a non-DOMException share rejection as unsupported', async () => {
+    (navigator as unknown as { canShare: unknown }).canShare = vi.fn(() => true);
+    (navigator as unknown as { share: unknown }).share = vi.fn(() => Promise.reject(new Error('boom')));
+    await expect(shareFiles([candidate])).resolves.toBe('unsupported');
   });
 });
 

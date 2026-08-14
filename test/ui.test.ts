@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { createApp, type AppHandle, type UiDeps } from '../src/app/ui.js';
+import { createApp, type AppHandle, type ShareCandidate, type ShareOutcome, type UiDeps } from '../src/app/ui.js';
 import { FakeCanvas } from './helpers/fakes.js';
 import { mountMarkup, patchVideo, setFiles, tick, type FakeMedia } from './helpers/dom.js';
 
@@ -11,16 +11,24 @@ interface Harness {
   downloads: Array<{ blob: Blob; filename: string }>;
   revoked: string[];
   canvas: FakeCanvas;
+  shareCalls: Array<readonly ShareCandidate[]>;
   el: <T extends HTMLElement>(id: string) => T;
   click: (id: string) => void;
   loadVideo: (name?: string) => Promise<void>;
 }
 
-function setup(options: { duration?: number; stall?: boolean } = {}): Harness {
+function setup(
+  options: {
+    duration?: number;
+    stall?: boolean;
+    shareFiles?: (files: readonly ShareCandidate[]) => Promise<ShareOutcome>;
+  } = {},
+): Harness {
   mountMarkup(document);
 
   const downloads: Array<{ blob: Blob; filename: string }> = [];
   const revoked: string[] = [];
+  const shareCalls: Array<readonly ShareCandidate[]> = [];
   const canvas = new FakeCanvas();
   let urlCounter = 0;
 
@@ -35,6 +43,14 @@ function setup(options: { duration?: number; stall?: boolean } = {}): Harness {
     triggerDownload: (blob, filename) => downloads.push({ blob, filename }),
     createCanvas: () => canvas,
     yieldToUi: () => Promise.resolve(),
+    ...(options.shareFiles
+      ? {
+          shareFiles: (files: readonly ShareCandidate[]) => {
+            shareCalls.push(files);
+            return options.shareFiles!(files);
+          },
+        }
+      : {}),
   };
 
   const app = createApp(deps);
@@ -49,6 +65,7 @@ function setup(options: { duration?: number; stall?: boolean } = {}): Harness {
     downloads,
     revoked,
     canvas,
+    shareCalls,
     el,
     click,
     async loadVideo(name = 'My Clip.mp4') {
@@ -583,8 +600,11 @@ async function readZipNames(blob: Blob): Promise<string[]> {
 }
 
 describe('export', () => {
-  async function withFrames(count: number): Promise<Harness> {
-    const h = setup({ duration: 10 });
+  async function withFrames(
+    count: number,
+    shareFiles?: (files: readonly ShareCandidate[]) => Promise<ShareOutcome>,
+  ): Promise<Harness> {
+    const h = setup({ duration: 10, ...(shareFiles ? { shareFiles } : {}) });
     await h.loadVideo();
     for (let i = 0; i < count; i += 1) {
       h.click('fwd-second');
@@ -694,6 +714,102 @@ describe('export', () => {
     await h.app.whenIdle();
 
     expect(h.el('toast').textContent).toBe('read failed');
+    expect(h.el('progress-overlay').hidden).toBe(true);
+  });
+});
+
+describe('export via the share sheet', () => {
+  async function withFrames(
+    count: number,
+    shareFiles: (files: readonly ShareCandidate[]) => Promise<ShareOutcome>,
+  ): Promise<Harness> {
+    const h = setup({ duration: 10, shareFiles });
+    await h.loadVideo();
+    for (let i = 0; i < count; i += 1) {
+      h.click('fwd-second');
+      h.click('grab-btn');
+      await h.app.whenIdle();
+    }
+    return h;
+  }
+
+  it('offers a single frame to the share sheet instead of downloading it', async () => {
+    const h = await withFrames(1, () => Promise.resolve('shared'));
+    h.click('download-zip');
+    await h.app.whenIdle();
+
+    expect(h.downloads).toHaveLength(0);
+    expect(h.shareCalls).toHaveLength(1);
+    expect(h.shareCalls[0]).toEqual([{ blob: h.app.store.all[0]!.blob, filename: 'My-Clip_001_00h00m01s000.jpg' }]);
+    expect(h.el('toast').textContent).toBe('Shared 1 frame');
+  });
+
+  it('offers a whole batch as raw images rather than zipping them first', async () => {
+    const h = await withFrames(3, () => Promise.resolve('shared'));
+    h.click('download-zip');
+    await h.app.whenIdle();
+
+    expect(h.downloads).toHaveLength(0);
+    expect(h.shareCalls).toHaveLength(1);
+    const shared = h.shareCalls[0]!;
+    expect(shared).toHaveLength(3);
+    expect(shared.map((f) => f.filename)).toEqual([
+      'My-Clip_001_00h00m01s000.jpg',
+      'My-Clip_002_00h00m02s000.jpg',
+      'My-Clip_003_00h00m03s000.jpg',
+    ]);
+    // Every frame goes over as its own image — nothing gets zipped first.
+    for (const file of shared) expect(file.blob.type).toBe('image/jpeg');
+    expect(h.el('toast').textContent).toBe('Shared 3 frames');
+  });
+
+  it('falls back to a plain download when the share sheet is unsupported', async () => {
+    const h = await withFrames(1, () => Promise.resolve('unsupported'));
+    h.click('download-zip');
+    await h.app.whenIdle();
+
+    expect(h.shareCalls).toHaveLength(1);
+    expect(h.downloads).toHaveLength(1);
+    expect(h.downloads[0]!.filename).toBe('My-Clip_001_00h00m01s000.jpg');
+    expect(h.el('toast').textContent).toBe('Saved 1 frame');
+  });
+
+  it('falls back to zipping a batch when the share sheet is unsupported', async () => {
+    const h = await withFrames(3, () => Promise.resolve('unsupported'));
+    h.click('download-zip');
+    await h.app.whenIdle();
+
+    expect(h.downloads).toHaveLength(1);
+    expect(h.downloads[0]!.filename).toBe('My-Clip_frames.zip');
+    expect(h.el('toast').textContent).toMatch(/^Saved 3 frames · /);
+  });
+
+  it('does nothing further when the user backs out of the share sheet', async () => {
+    const h = await withFrames(2, () => Promise.resolve('cancelled'));
+    const before = h.el('toast').textContent;
+
+    h.click('download-zip');
+    await h.app.whenIdle();
+
+    expect(h.downloads).toHaveLength(0);
+    expect(h.el('progress-overlay').hidden).toBe(true);
+    // Backing out of the OS sheet is not an error — nothing should announce it.
+    expect(h.el('toast').textContent).toBe(before);
+  });
+
+  it('never opens the packaging overlay while the share sheet is up', async () => {
+    let resolveShare!: (outcome: ShareOutcome) => void;
+    const pending = new Promise<ShareOutcome>((resolve) => {
+      resolveShare = resolve;
+    });
+    const h = await withFrames(3, () => pending);
+
+    h.click('download-zip');
+    await tick();
+    expect(h.el('progress-overlay').hidden).toBe(true);
+
+    resolveShare('shared');
+    await h.app.whenIdle();
     expect(h.el('progress-overlay').hidden).toBe(true);
   });
 });
