@@ -2,7 +2,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { FrameStore, type Frame } from '../src/lib/store.js';
 
-function makeFrame(store: FrameStore, time: number, size = 10): Frame {
+function makeFrame(
+  store: FrameStore,
+  time: number,
+  size = 10,
+  identity: { videoKey?: string; signature?: string } = {},
+): Frame {
   return {
     id: store.nextId(),
     time,
@@ -11,6 +16,8 @@ function makeFrame(store: FrameStore, time: number, size = 10): Frame {
     width: 100,
     height: 50,
     ext: 'jpg',
+    videoKey: identity.videoKey ?? 'clip',
+    signature: identity.signature ?? 'jpeg:0.92:1920:none',
   };
 }
 
@@ -174,5 +181,36 @@ describe('FrameStore', () => {
     const frame = makeFrame(bare, 1);
     bare.add(frame);
     expect(() => bare.clear()).not.toThrow();
+  });
+
+  describe('findDuplicate', () => {
+    const candidate = (time: number, signature = 'jpeg:0.92:1920:none') => ({
+      videoKey: 'clip',
+      time,
+      signature,
+    });
+
+    it('finds a frame already captured at that moment', () => {
+      const frame = makeFrame(store, 1);
+      store.add(frame);
+      expect(store.findDuplicate(candidate(1))).toEqual({ frame, kind: 'exact' });
+    });
+
+    it('distinguishes a re-grab at other settings', () => {
+      store.add(makeFrame(store, 1));
+      expect(store.findDuplicate(candidate(1, 'png:-:720:none'))?.kind).toBe('settings');
+    });
+
+    it('returns null for a moment not yet captured', () => {
+      store.add(makeFrame(store, 1));
+      expect(store.findDuplicate(candidate(2))).toBeNull();
+    });
+
+    it('stops matching a frame once it is removed', () => {
+      const frame = makeFrame(store, 1);
+      store.add(frame);
+      store.remove(frame.id);
+      expect(store.findDuplicate(candidate(1))).toBeNull();
+    });
   });
 });
