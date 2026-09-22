@@ -18,6 +18,7 @@ function makeFrame(
     ext: 'jpg',
     videoKey: identity.videoKey ?? 'clip',
     signature: identity.signature ?? 'jpeg:0.92:1920:none',
+    sharpness: null,
   };
 }
 

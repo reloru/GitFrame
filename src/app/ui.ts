@@ -25,6 +25,7 @@ import {
   type Settings,
   createSettings,
 } from '../lib/settings.js';
+import { bySharpness } from '../lib/sharpness.js';
 import { FrameStore, type Frame } from '../lib/store.js';
 import {
   MAX_FPS,
@@ -168,6 +169,8 @@ export function createApp(deps: UiDeps): AppHandle {
     galleryCount: must<HTMLElement>(doc, 'gallery-count'),
     galleryHint: must<HTMLElement>(doc, 'gallery-hint'),
     selectAll: must<HTMLButtonElement>(doc, 'select-all'),
+    sortTime: must<HTMLButtonElement>(doc, 'sort-time'),
+    sortSharp: must<HTMLButtonElement>(doc, 'sort-sharp'),
     deleteSelected: must<HTMLButtonElement>(doc, 'delete-selected'),
     clearAll: must<HTMLButtonElement>(doc, 'clear-all'),
     dock: must<HTMLElement>(doc, 'dock'),
@@ -629,6 +632,7 @@ export function createApp(deps: UiDeps): AppHandle {
     width: number,
     height: number,
     signature: string,
+    sharpness: number | null,
   ): Frame {
     return {
       id: store.nextId(),
@@ -640,6 +644,7 @@ export function createApp(deps: UiDeps): AppHandle {
       ext: formatById(settings.formatId).ext,
       videoKey,
       signature,
+      sharpness,
     };
   }
 
@@ -726,9 +731,9 @@ export function createApp(deps: UiDeps): AppHandle {
     el.grabBtn.disabled = true;
     try {
       const renderer = makeRenderer(settings.maxEdge);
-      const { blob, size } = await renderer.render(video);
+      const { blob, size, sharpness } = await renderer.render(video);
       const added = store.add(
-        toFrame(candidate.time, blob, size.width, size.height, candidate.signature),
+        toFrame(candidate.time, blob, size.width, size.height, candidate.signature, sharpness),
       );
       toast(added ? `Grabbed ${formatTimecode(candidate.time)}` : 'Frame limit reached');
     } catch (error) {
@@ -809,6 +814,7 @@ export function createApp(deps: UiDeps): AppHandle {
               captured.size.width,
               captured.size.height,
               signature,
+              captured.sharpness,
             ),
           );
         },
@@ -986,6 +992,16 @@ export function createApp(deps: UiDeps): AppHandle {
   /* Gallery                                                           */
   /* ---------------------------------------------------------------- */
 
+  /** Display order only — the store, and so export numbering, stays in time order. */
+  let sortBySharpness = false;
+
+  function renderSort(): void {
+    el.sortTime.classList.toggle('is-active', !sortBySharpness);
+    el.sortSharp.classList.toggle('is-active', sortBySharpness);
+    el.sortTime.setAttribute('aria-checked', sortBySharpness ? 'false' : 'true');
+    el.sortSharp.setAttribute('aria-checked', sortBySharpness ? 'true' : 'false');
+  }
+
   function renderGallery(frames: readonly Frame[]): void {
     el.gallerySection.hidden = frames.length === 0;
     el.dock.hidden = frames.length === 0;
@@ -1003,7 +1019,7 @@ export function createApp(deps: UiDeps): AppHandle {
         : `Download all ${frames.length}`;
 
     el.gallery.replaceChildren();
-    for (const frame of frames) {
+    for (const frame of sortBySharpness ? bySharpness(frames) : frames) {
       const item = doc.createElement('li');
       const tile = doc.createElement('button');
       tile.type = 'button';
@@ -1012,7 +1028,12 @@ export function createApp(deps: UiDeps): AppHandle {
       const isSelected = store.isSelected(frame.id);
       tile.classList.toggle('is-selected', isSelected);
       tile.setAttribute('aria-pressed', isSelected ? 'true' : 'false');
-      tile.setAttribute('aria-label', `Frame at ${formatTimecode(frame.time)}`);
+      tile.setAttribute(
+        'aria-label',
+        frame.sharpness === null
+          ? `Frame at ${formatTimecode(frame.time)}`
+          : `Frame at ${formatTimecode(frame.time)}, sharpness ${frame.sharpness} of 100`,
+      );
 
       const img = doc.createElement('img');
       img.className = 'tile__img';
@@ -1031,6 +1052,13 @@ export function createApp(deps: UiDeps): AppHandle {
       check.setAttribute('aria-hidden', 'true');
 
       tile.append(img, time, check);
+      if (frame.sharpness !== null) {
+        const sharp = doc.createElement('span');
+        sharp.className = 'tile__sharp';
+        sharp.textContent = String(frame.sharpness);
+        sharp.setAttribute('aria-hidden', 'true');
+        tile.appendChild(sharp);
+      }
       item.appendChild(tile);
       el.gallery.appendChild(item);
     }
@@ -1041,6 +1069,18 @@ export function createApp(deps: UiDeps): AppHandle {
     const tile = target?.closest?.('.tile') as HTMLElement | null;
     const id = tile?.dataset?.id;
     if (id) store.toggleSelection(id);
+  });
+
+  on(el.sortTime, 'click', () => {
+    sortBySharpness = false;
+    renderSort();
+    renderGallery(store.all);
+  });
+
+  on(el.sortSharp, 'click', () => {
+    sortBySharpness = true;
+    renderSort();
+    renderGallery(store.all);
   });
 
   on(el.selectAll, 'click', () => {

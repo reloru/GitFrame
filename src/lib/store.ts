@@ -26,6 +26,8 @@ export interface Frame {
   readonly videoKey: string;
   /** The output settings this was captured with — see `lib/dedupe.ts`. */
   readonly signature: string;
+  /** 0–100, higher is sharper (see `lib/sharpness.ts`); `null` if it couldn't be measured. */
+  readonly sharpness: number | null;
 }
 
 export type StoreListener = (frames: readonly Frame[]) => void;
