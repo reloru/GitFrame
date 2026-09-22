@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 
 import { FrameStore, type Frame } from '../src/lib/store.js';
 
@@ -22,11 +22,11 @@ function makeFrame(
 }
 
 describe('FrameStore', () => {
-  let revoke: ReturnType<typeof vi.fn>;
+  let revoke: Mock<(url: string) => void>;
   let store: FrameStore;
 
   beforeEach(() => {
-    revoke = vi.fn();
+    revoke = vi.fn<(url: string) => void>();
     store = new FrameStore({ revokeUrl: revoke });
   });
 
