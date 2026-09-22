@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   BACKGROUND,
+  ICON_DIR,
   MASKABLE_SCALE,
   RASTER_ICONS,
   SHAPES,
@@ -125,6 +126,33 @@ describe('iconSvg', () => {
   });
 });
 
+describe('committed icons', () => {
+  const stale = 'out of date with scripts/icon.mjs — run `npm run icons`';
+
+  it.each(RASTER_ICONS)('$file matches the icon geometry pixel for pixel', ({ file, size, scale }) => {
+    const chunks = readChunks(new Uint8Array(readFileSync(resolve(root, ICON_DIR, file))));
+    const ihdr = chunks.find((c) => c.type === 'IHDR')!.data;
+    const view = new DataView(ihdr.buffer, ihdr.byteOffset, ihdr.byteLength);
+    expect([view.getUint32(0), view.getUint32(4)], `${file} size`).toEqual([size, size]);
+
+    // Compare decoded pixels, not file bytes: the same pixels can deflate to
+    // different bytes under a different zlib build.
+    const idat = Buffer.concat(chunks.filter((c) => c.type === 'IDAT').map((c) => c.data));
+    const raw = inflateSync(idat);
+    const stride = size * 3;
+    const committed = new Uint8Array(size * stride);
+    for (let y = 0; y < size; y += 1) {
+      expect(raw[y * (stride + 1)], `${file} row ${y} filter`).toBe(0);
+      committed.set(raw.subarray(y * (stride + 1) + 1, (y + 1) * (stride + 1)), y * stride);
+    }
+    expect(Buffer.compare(committed, rasterize(size, scale)), `${file} is ${stale}`).toBe(0);
+  });
+
+  it('has an SVG favicon drawn from the same geometry', () => {
+    expect(readFileSync(resolve(root, ICON_DIR, 'icon.svg'), 'utf8'), `icon.svg is ${stale}`).toBe(iconSvg());
+  });
+});
+
 describe('web app manifest', () => {
   const manifest = JSON.parse(readFileSync(resolve(root, 'src/manifest.webmanifest'), 'utf8')) as {
     name: string;
@@ -144,7 +172,7 @@ describe('web app manifest', () => {
     expect(manifest.display).toBe('standalone');
   });
 
-  it('only references icons the build produces, at their real size', () => {
+  it('only references icons that ship, at their real size', () => {
     for (const icon of manifest.icons) {
       const built = RASTER_ICONS.find((r) => `/${r.file}` === icon.src);
       expect(built, icon.src).toBeDefined();
@@ -166,7 +194,7 @@ describe('web app manifest', () => {
     expect(manifest.background_color).toBe(BACKGROUND);
   });
 
-  it('gives iOS its own full-bleed icon, which the build produces', () => {
+  it('gives iOS its own full-bleed icon, which ships', () => {
     const href = /<link rel="apple-touch-icon" href="\/([^"]+)"/.exec(html)?.[1];
     const built = RASTER_ICONS.find((r) => r.file === href);
     expect(built).toEqual({ file: 'apple-touch-icon.png', size: 180, scale: 1 });

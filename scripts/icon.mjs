@@ -4,12 +4,19 @@
  * PNG the manifest and iOS need. Keeping one definition is what stops the
  * home-screen icon and the tab icon drifting apart.
  *
+ * The drawn files are committed in src/icons rather than drawn on every build,
+ * which keeps builds fast; `npm run icons` redraws them, and a test fails if
+ * the committed files no longer match this geometry.
+ *
  * Coordinates are on a 100×100 canvas. Every shape is a polygon or a
  * round-capped stroke, so the rasteriser below needs nothing but point-in-shape
  * tests: no image library, keeping the build free of dependencies.
  */
 
 import { deflateSync } from 'node:zlib';
+
+/** Where the drawn icons are committed, relative to the repo root. */
+export const ICON_DIR = 'src/icons';
 
 export const BACKGROUND = '#0b0f14';
 

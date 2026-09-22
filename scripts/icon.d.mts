@@ -4,6 +4,7 @@ export type Shape =
   | { readonly type: 'polygon'; readonly points: readonly Point[]; readonly fill: string }
   | { readonly type: 'stroke'; readonly from: Point; readonly to: Point; readonly width: number; readonly fill: string };
 
+export const ICON_DIR: string;
 export const BACKGROUND: string;
 export const SHAPES: readonly Shape[];
 export const MASKABLE_SCALE: number;
