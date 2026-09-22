@@ -13,17 +13,40 @@ import {
 } from '../src/app/extractor.js';
 import type { RGBAImage } from '../src/lib/detect.js';
 import { formatById } from '../src/lib/format.js';
+import { SHARPNESS_MAX_EDGE } from '../src/lib/sharpness.js';
 import { FakeCanvas, FakeVideo, flush, inertTimers, instantTimers } from './helpers/fakes.js';
 
 const noYield = (): Promise<void> => Promise.resolve();
+
+/** The renderer's first canvas is the output; any later one is for scoring sharpness. */
+function canvasPair(output = new FakeCanvas(), analysis = new FakeCanvas()) {
+  const factory = vi.fn((): FakeCanvas => (factory.mock.calls.length === 1 ? output : analysis));
+  return { output, analysis, factory };
+}
 
 function makeRenderer(canvas = new FakeCanvas(), maxEdge = 0) {
   return createCanvasRenderer({
     format: formatById('jpeg'),
     quality: 0.8,
     maxEdge,
-    createCanvas: () => canvas,
+    createCanvas: canvasPair(canvas).factory,
   });
+}
+
+/** Vertical stripes one pixel wide: as sharp as an image gets along x. */
+function stripes(width: number, height: number): RGBAImage {
+  const data = new Uint8ClampedArray(width * height * 4);
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const v = Math.floor(x / 2) % 2 === 0 ? 20 : 235;
+      const o = (y * width + x) * 4;
+      data[o] = v;
+      data[o + 1] = v;
+      data[o + 2] = v;
+      data[o + 3] = 255;
+    }
+  }
+  return { data, width, height };
 }
 
 describe('waitForEvent', () => {
@@ -209,9 +232,8 @@ describe('createCanvasRenderer', () => {
     expect(canvas.lastType).toBe('image/png');
   });
 
-  it('reuses a single canvas across frames', async () => {
-    const canvas = new FakeCanvas();
-    const factory = vi.fn(() => canvas);
+  it('reuses its canvases across frames instead of allocating per frame', async () => {
+    const { factory } = canvasPair();
     const renderer = createCanvasRenderer({
       format: formatById('jpeg'),
       quality: 0.9,
@@ -222,7 +244,66 @@ describe('createCanvasRenderer', () => {
     await renderer.render(video);
     await renderer.render(video);
     await renderer.render(video);
-    expect(factory).toHaveBeenCalledTimes(1);
+    // One output canvas, one analysis canvas — no more however many frames.
+    expect(factory).toHaveBeenCalledTimes(2);
+  });
+
+  it('scores sharpness at a fixed size, independent of the output size', async () => {
+    const { analysis, factory } = canvasPair(new FakeCanvas(), new FakeCanvas({ imageData: (_x, _y, w, h) => stripes(w, h) }));
+    const renderer = createCanvasRenderer({
+      format: formatById('jpeg'),
+      quality: 0.8,
+      maxEdge: 720,
+      createCanvas: factory,
+    });
+
+    const { size, sharpness } = await renderer.render(new FakeVideo({ videoWidth: 3840, videoHeight: 2160 }));
+
+    expect(size).toEqual({ width: 720, height: 405 });
+    expect(analysis.width).toBe(SHARPNESS_MAX_EDGE);
+    expect(analysis.height).toBe(576);
+    expect(analysis.context.draws).toEqual([{ dw: 1024, dh: 576 }]);
+    expect(sharpness).toBeGreaterThan(50);
+  });
+
+  it('scores the cropped picture, not the bars', async () => {
+    const { analysis, factory } = canvasPair();
+    const renderer = createCanvasRenderer({
+      format: formatById('jpeg'),
+      quality: 0.8,
+      maxEdge: 0,
+      crop: { x: 0, y: 140, width: 1920, height: 800 },
+      createCanvas: factory,
+    });
+    await renderer.render(new FakeVideo({ videoWidth: 1920, videoHeight: 1080 }));
+    expect(analysis.context.draws).toEqual([{ sx: 0, sy: 140, sw: 1920, sh: 800, dw: 1024, dh: 427 }]);
+  });
+
+  it('reports no score for a frame with no detail', async () => {
+    // FakeCanvas hands back a uniform grey frame by default.
+    const { sharpness } = await makeRenderer().render(new FakeVideo());
+    expect(sharpness).toBeNull();
+  });
+
+  it('keeps the frame when pixels cannot be read back for scoring', async () => {
+    const unreadable = new FakeCanvas({
+      imageData: () => {
+        throw new Error('SecurityError: tainted canvas');
+      },
+    });
+    const { factory } = canvasPair(new FakeCanvas(), unreadable);
+    const renderer = createCanvasRenderer({ format: formatById('jpeg'), quality: 0.8, maxEdge: 0, createCanvas: factory });
+    const result = await renderer.render(new FakeVideo());
+    expect(result.blob.size).toBeGreaterThan(0);
+    expect(result.sharpness).toBeNull();
+  });
+
+  it('keeps the frame when the analysis canvas has no 2D context', async () => {
+    const { factory } = canvasPair(new FakeCanvas(), new FakeCanvas({ noContext: true }));
+    const renderer = createCanvasRenderer({ format: formatById('jpeg'), quality: 0.8, maxEdge: 0, createCanvas: factory });
+    const result = await renderer.render(new FakeVideo());
+    expect(result.blob.size).toBeGreaterThan(0);
+    expect(result.sharpness).toBeNull();
   });
 
   it('fails clearly when dimensions are not known yet', async () => {
@@ -249,7 +330,7 @@ describe('createCanvasRenderer', () => {
       quality: 0.8,
       maxEdge: 0,
       crop: { x: 10, y: 40, width: 300, height: 200 },
-      createCanvas: () => canvas,
+      createCanvas: canvasPair(canvas).factory,
     });
 
     const { size } = await renderer.render(new FakeVideo({ videoWidth: 320, videoHeight: 280 }));
@@ -267,7 +348,7 @@ describe('createCanvasRenderer', () => {
       quality: 0.8,
       maxEdge: 150,
       crop: { x: 0, y: 0, width: 400, height: 200 },
-      createCanvas: () => canvas,
+      createCanvas: canvasPair(canvas).factory,
     });
 
     // A 400x200 crop capped to 150 longest-edge -> 150x75, not scaled from
@@ -320,7 +401,7 @@ describe('extractFrames', () => {
       render: async () => {
         call += 1;
         if (call === 2) throw new Error('decode blew up');
-        return { blob: new Blob(['x']), size: { width: 10, height: 10 } };
+        return { blob: new Blob(['x']), size: { width: 10, height: 10 }, sharpness: call * 10 };
       },
     };
 
@@ -337,6 +418,7 @@ describe('extractFrames', () => {
     expect(result.failures[0]).toBeInstanceOf(ExtractionError);
     expect(result.failures[0]!.time).toBe(2);
     expect(result.failures[0]!.message).toBe('decode blew up');
+    expect(result.frames.map((frame) => frame.sharpness)).toEqual([10, 30]);
     expect(result.cancelled).toBe(false);
   });
 

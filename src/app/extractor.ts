@@ -14,6 +14,7 @@ import { cropRect, detectVoidsAuto, type CropRect, type RGBAImage, type VoidResu
 import type { ImageFormat } from '../lib/format.js';
 import { qualityFor } from '../lib/format.js';
 import { fitToMaxEdge, type Size } from '../lib/scale.js';
+import { SHARPNESS_MAX_EDGE, sharpnessScore } from '../lib/sharpness.js';
 
 /** The slice of HTMLVideoElement this module needs. */
 export interface VideoLike {
@@ -227,6 +228,8 @@ export interface CanvasLike {
 export interface RenderResult {
   readonly blob: Blob;
   readonly size: Size;
+  /** 0–100 (see lib/sharpness.ts), or `null` when it could not be measured. */
+  readonly sharpness: number | null;
 }
 
 export interface FrameRenderer {
@@ -251,12 +254,33 @@ function defaultCanvasFactory(): CanvasLike {
  *
  * Reusing one canvas matters: allocating a fresh one per frame is what makes
  * long extraction runs stutter and eventually get the tab killed on iOS.
+ *
+ * Sharpness is measured on a second canvas, also reused, at a fixed size —
+ * scoring the output canvas would make the score depend on the export-size
+ * setting. It is created on the first render rather than up front.
  */
 export function createCanvasRenderer(options: RendererOptions): FrameRenderer {
   const factory = options.createCanvas ?? defaultCanvasFactory;
   const canvas = factory();
+  let analysisCanvas: CanvasLike | null = null;
   const quality = qualityFor(options.format, options.quality);
   const crop = options.crop;
+
+  function measureSharpness(video: VideoLike, source: Size): number | null {
+    const size = fitToMaxEdge(source, SHARPNESS_MAX_EDGE);
+    analysisCanvas ??= factory();
+    analysisCanvas.width = size.width;
+    analysisCanvas.height = size.height;
+    const ctx = analysisCanvas.getContext('2d');
+    if (!ctx) return null;
+    ctx.imageSmoothingEnabled = true;
+    if (crop) {
+      ctx.drawImage(video as never, crop.x, crop.y, crop.width, crop.height, 0, 0, size.width, size.height);
+    } else {
+      ctx.drawImage(video as never, 0, 0, size.width, size.height);
+    }
+    return sharpnessScore(ctx.getImageData(0, 0, size.width, size.height));
+  }
 
   return {
     async render(video: VideoLike): Promise<RenderResult> {
@@ -285,7 +309,16 @@ export function createCanvasRenderer(options: RendererOptions): FrameRenderer {
         canvas.toBlob(resolve, options.format.mime, quality);
       });
       if (!blob) throw new Error('Could not encode frame');
-      return { blob, size };
+
+      // A score is a nice-to-have; failing to read pixels back must never cost
+      // the frame itself.
+      let sharpness: number | null = null;
+      try {
+        sharpness = measureSharpness(video, sourceSize);
+      } catch {
+        // Tainted or unreadable canvas — keep the frame, drop the score.
+      }
+      return { blob, size, sharpness };
     },
   };
 }
@@ -298,6 +331,7 @@ export interface CapturedFrame {
   readonly time: number;
   readonly blob: Blob;
   readonly size: Size;
+  readonly sharpness: number | null;
 }
 
 export interface ExtractProgress {
@@ -357,8 +391,8 @@ export async function extractFrames(options: ExtractOptions): Promise<ExtractRes
         timers: options.timers,
         signal: options.signal,
       });
-      const { blob, size } = await options.renderer.render(options.video);
-      const frame: CapturedFrame = { time, blob, size };
+      const { blob, size, sharpness } = await options.renderer.render(options.video);
+      const frame: CapturedFrame = { time, blob, size, sharpness };
       frames.push(frame);
       options.onFrame?.(frame);
     } catch (error) {

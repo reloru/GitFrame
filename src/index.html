@@ -12,12 +12,15 @@
     <meta name="theme-color" content="#0b0f14" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="GitFrame" />
     <meta
       name="description"
       content="Pull still frames out of a video on your phone. Runs entirely on your device — nothing is uploaded and nothing is stored."
     />
     <title>GitFrame — video frame extractor</title>
     <link rel="icon" href="/icon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
@@ -252,6 +255,14 @@
           <button type="button" class="btn btn--small" id="select-all">Select all</button>
         </div>
         <p class="gallery-head__hint" id="gallery-hint">Tap a frame to select it.</p>
+        <div class="segmented segmented--compact" role="radiogroup" aria-label="Order frames by">
+          <button type="button" class="segmented__btn is-active" id="sort-time" role="radio" aria-checked="true">
+            Time
+          </button>
+          <button type="button" class="segmented__btn" id="sort-sharp" role="radio" aria-checked="false">
+            Sharpest first
+          </button>
+        </div>
         <ul class="gallery" id="gallery"></ul>
         <div class="gallery-actions">
           <button type="button" class="btn btn--small btn--danger" id="delete-selected">Delete selected</button>
