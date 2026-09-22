@@ -1053,6 +1053,119 @@ describe('gallery', () => {
   });
 });
 
+/** A sine grating: a short period is crisp detail, a long one is soft. */
+function grating(width: number, height: number, period: number): { data: Uint8ClampedArray; width: number; height: number } {
+  const data = new Uint8ClampedArray(width * height * 4);
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const v = Math.round(127.5 + 127.5 * Math.sin((2 * Math.PI * (x + y)) / period));
+      const o = (y * width + x) * 4;
+      data[o] = v;
+      data[o + 1] = v;
+      data[o + 2] = v;
+      data[o + 3] = 255;
+    }
+  }
+  return { data, width, height };
+}
+
+describe('sharpness in the gallery', () => {
+  /** Three grabs at 0:01, 0:02, 0:03: soft, crisp, in between. */
+  async function withScoredFrames(): Promise<Harness> {
+    const h = setup({ duration: 10 });
+    await h.loadVideo();
+    const periods = [48, 3, 12];
+    let call = 0;
+    h.canvas.context.imageData = (_x, _y, w, hgt) => grating(w, hgt, periods[call++]!);
+    for (let i = 0; i < periods.length; i += 1) {
+      h.click('fwd-second');
+      h.click('grab-btn');
+      await h.app.whenIdle();
+    }
+    return h;
+  }
+
+  const tileTimes = (h: Harness): string[] =>
+    [...h.el('gallery').querySelectorAll('.tile__time')].map((n) => n.textContent ?? '');
+  const badges = (h: Harness): number[] =>
+    [...h.el('gallery').querySelectorAll('.tile__sharp')].map((n) => Number(n.textContent));
+
+  it('scores every captured frame and shows it on the tile', async () => {
+    const h = await withScoredFrames();
+    const scores = h.app.store.all.map((f) => f.sharpness!);
+    expect(scores.every((s) => Number.isInteger(s) && s >= 0 && s <= 100)).toBe(true);
+    expect(badges(h)).toEqual(scores);
+    // Crisp beats in-between beats soft.
+    expect(scores[1]!).toBeGreaterThan(scores[2]!);
+    expect(scores[2]!).toBeGreaterThan(scores[0]!);
+    const label = h.el('gallery').querySelectorAll('.tile')[1]!.getAttribute('aria-label');
+    expect(label).toBe(`Frame at 0:02.000, sharpness ${scores[1]} of 100`);
+  });
+
+  it('shows no badge when a frame could not be scored', async () => {
+    // The fake canvas hands back a flat grey frame by default: nothing to judge.
+    const h = setup({ duration: 10 });
+    await h.loadVideo();
+    h.click('grab-btn');
+    await h.app.whenIdle();
+    expect(h.app.store.all[0]!.sharpness).toBeNull();
+    expect(h.el('gallery').querySelector('.tile__sharp')).toBeNull();
+    expect(h.el('gallery').querySelector('.tile')!.getAttribute('aria-label')).toBe('Frame at 0:00.000');
+  });
+
+  it('starts in time order', async () => {
+    const h = await withScoredFrames();
+    expect(tileTimes(h)).toEqual(['0:01.000', '0:02.000', '0:03.000']);
+    expect(h.el('sort-time').getAttribute('aria-checked')).toBe('true');
+    expect(h.el('sort-sharp').getAttribute('aria-checked')).toBe('false');
+  });
+
+  it('reorders the view sharpest first, and back', async () => {
+    const h = await withScoredFrames();
+
+    h.click('sort-sharp');
+    expect(tileTimes(h)).toEqual(['0:02.000', '0:03.000', '0:01.000']);
+    const shown = badges(h);
+    expect([...shown].sort((a, b) => b - a)).toEqual(shown);
+    expect(h.el('sort-sharp').classList.contains('is-active')).toBe(true);
+    expect(h.el('sort-sharp').getAttribute('aria-checked')).toBe('true');
+    expect(h.el('sort-time').getAttribute('aria-checked')).toBe('false');
+
+    h.click('sort-time');
+    expect(tileTimes(h)).toEqual(['0:01.000', '0:02.000', '0:03.000']);
+    expect(h.el('sort-time').classList.contains('is-active')).toBe(true);
+  });
+
+  it('keeps sorting sharpest first as more frames arrive', async () => {
+    const h = await withScoredFrames();
+    h.click('sort-sharp');
+    // Softer than anything already grabbed, so it belongs at the end.
+    h.canvas.context.imageData = (_x, _y, w, hgt) => grating(w, hgt, 96);
+    h.click('fwd-second');
+    h.click('grab-btn');
+    await h.app.whenIdle();
+    expect(tileTimes(h)).toEqual(['0:02.000', '0:03.000', '0:01.000', '0:04.000']);
+  });
+
+  it('leaves the store, and so export numbering, in time order', async () => {
+    const h = await withScoredFrames();
+    h.click('sort-sharp');
+    expect(h.app.store.all.map((f) => f.time)).toEqual([1, 2, 3]);
+
+    h.click('download-zip');
+    await h.app.whenIdle();
+    const names = await readZipNames(h.downloads[0]!.blob);
+    expect(names.map((n) => n.replace(/^.*_(\d+)_.*$/, '$1'))).toEqual(['001', '002', '003']);
+  });
+
+  it('selects the tile that was tapped, whatever the order on screen', async () => {
+    const h = await withScoredFrames();
+    h.click('sort-sharp');
+    h.el('gallery').querySelector<HTMLElement>('.tile')!.click();
+    expect(h.app.store.all.filter((f) => h.app.store.isSelected(f.id)).map((f) => f.time)).toEqual([2]);
+  });
+});
+
 /** Pull the entry names out of a store-only archive by walking its local headers. */
 async function readZipNames(blob: Blob): Promise<string[]> {
   const data = new Uint8Array(await blob.arrayBuffer());
