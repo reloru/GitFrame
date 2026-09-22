@@ -12,12 +12,17 @@ The video never leaves the phone. There is no upload, no account, and no
 server-side processing — decoding and encoding happen in the browser via
 `<video>` and `<canvas>`.
 
-Nothing is stored, either:
+Your footage is never written to the device either:
 
 - no `localStorage`, `sessionStorage`, `IndexedDB`, or cookies
-- no service worker and no offline cache
-- every response is served `Cache-Control: no-store`
-- settings live in memory for the session and are gone when the tab closes
+- every network response is served `Cache-Control: no-store`
+- captured frames and settings live in memory for the session and are gone when
+  the app closes
+
+What *is* stored is the app. A service worker keeps a copy of GitFrame's own
+HTML, script, styles and icons, so it opens from the home screen with no
+connection. That cache holds only files shipped by this repo — never a frame,
+never a video, nothing that came off your camera roll.
 
 The Worker that serves the app has no storage bindings at all — it hands back
 static files and a health check, and that is the whole of it. A
@@ -47,7 +52,7 @@ The mobile requirements drove most of the design:
 - Grab the current frame, or batch-extract every N seconds / N frames total
 - PNG, JPG, or WebP output with a quality slider and longest-edge downscaling
 - Tap to select frames; download one as an image or many as a ZIP
-- Runs offline once loaded — there is nothing to talk to
+- Installs to the home screen and opens offline — there is nothing to talk to
 
 ## Development
 
@@ -68,6 +73,8 @@ npm run build      # bundles the client into dist/client
 | `src/lib/`        | Pure logic: timecodes, extraction planning, ZIP, naming   |
 | `src/app/`        | Seek-and-capture engine and the DOM controller            |
 | `src/index.html`  | The markup the controller binds to                        |
+| `src/sw.js`       | Service worker — caches the app shell for offline launch  |
+| `scripts/`        | Build: bundles the client and rasterises the icons        |
 | `worker/`         | Cloudflare Worker that serves the built client            |
 | `test/`           | Unit tests plus jsdom tests that mount the real markup    |
 

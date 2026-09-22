@@ -7,6 +7,14 @@ export default defineConfig({
     setupFiles: ['test/setup.ts'],
     coverage: {
       provider: 'v8',
+      /*
+       * src/sw.js is deliberately absent. It IS tested — test/sw.test.ts drives
+       * its real install, activate and fetch handlers — but that test evaluates
+       * the file as the classic script the browser loads, rather than importing
+       * it, so V8 cannot attribute the execution back to the file. Including it
+       * reports a flat 0% for well-covered code and drags the totals toward the
+       * threshold for no signal at all.
+       */
       include: ['src/**/*.ts', 'worker/**/*.ts'],
       reporter: ['text-summary', 'cobertura', 'html'],
       reportsDirectory: 'coverage',

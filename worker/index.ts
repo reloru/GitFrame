@@ -25,6 +25,13 @@ const CSP = [
   "media-src 'self' blob:",
   "connect-src 'self'",
   "font-src 'self'",
+  /*
+   * Both are already permitted by the fallback chains (manifest-src falls back
+   * to default-src, worker-src to script-src), but naming them means a later
+   * edit to those directives cannot silently take offline support with it.
+   */
+  "manifest-src 'self'",
+  "worker-src 'self'",
   "object-src 'none'",
   "base-uri 'none'",
   "form-action 'none'",
@@ -40,9 +47,12 @@ const SECURITY_HEADERS: Readonly<Record<string, string>> = {
   // Explicitly turn off everything the app never uses.
   'Permissions-Policy': 'camera=(), microphone=(), geolocation=(), interest-cohort=()',
   /*
-   * Nothing about a session should outlive it — not on the device, not in a
-   * proxy. The whole payload is a few tens of kilobytes, so re-fetching it
-   * costs far less than leaving copies of the app lying around.
+   * No HTTP-level caching, anywhere — not in the browser's cache, not in a
+   * proxy. The service worker's offline copy is deliberately separate from
+   * this: the Cache Storage API is independent of the HTTP cache and stores a
+   * response regardless of this header, so the app can be available offline
+   * while every network fetch still revalidates. That also keeps sw.js itself
+   * always fresh, which is what lets a deploy supersede a cached version.
    */
   'Cache-Control': 'no-store, max-age=0',
 };

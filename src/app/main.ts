@@ -70,5 +70,19 @@ export function bootstrap(doc: Document): AppHandle {
 /* c8 ignore start -- browser-only bootstrap, exercised by hand not by tests */
 if (typeof document !== 'undefined' && document.getElementById('empty-state')) {
   bootstrap(document);
+  /*
+   * Register the service worker that makes the app open without a connection.
+   *
+   * Deliberately after bootstrap and never awaited: registration is not worth
+   * delaying a usable UI for, and an app that cannot cache itself still works
+   * perfectly well online. Feature-detected rather than assumed — a browser
+   * without service workers, or a page opened over file://, simply skips it.
+   */
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('/sw.js').catch(() => {
+      // Nothing to tell the user: offline support is the only casualty, and
+      // saying so mid-task would be noise.
+    });
+  }
 }
 /* c8 ignore stop */

@@ -13,6 +13,10 @@
     "isolatedModules": true,
     "verbatimModuleSyntax": false,
     "resolveJsonModule": true,
+    // test/png.test.ts and test/manifest.test.ts import the .mjs build scripts
+    // to exercise the icon rasteriser and PNG encoder. checkJs stays off, so
+    // those files join the program without being type-checked.
+    "allowJs": true,
     "skipLibCheck": true,
     "noEmit": true,
     "forceConsistentCasingInFileNames": true

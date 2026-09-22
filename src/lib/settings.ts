@@ -2,9 +2,11 @@
  * Session settings.
  *
  * Deliberately in-memory only. GitFrame does not use localStorage,
- * sessionStorage, IndexedDB, cookies, or a service worker cache — closing the
- * tab leaves nothing behind on the device. Settings live for the session and
- * then they're gone.
+ * sessionStorage, IndexedDB or cookies — closing the tab leaves no trace of
+ * what you did with it. Settings live for the session and then they're gone.
+ *
+ * The app does keep a service worker cache, but that holds GitFrame's own
+ * files so it opens offline; nothing about a session goes into it.
  */
 
 import type { CropRect } from './detect.js';

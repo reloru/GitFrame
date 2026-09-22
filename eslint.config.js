@@ -22,10 +22,24 @@ export default tseslint.config(
         console: 'readonly',
         process: 'readonly',
         URL: 'readonly',
+        TextEncoder: 'readonly',
       },
     },
     rules: {
       'no-console': 'off',
+    },
+  },
+  {
+    // The service worker runs in ServiceWorkerGlobalScope, not the page, so its
+    // globals have to be declared or no-undef rejects the file.
+    files: ['src/sw.js'],
+    languageOptions: {
+      globals: {
+        self: 'readonly',
+        caches: 'readonly',
+        fetch: 'readonly',
+        URL: 'readonly',
+      },
     },
   },
 );

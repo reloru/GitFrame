@@ -10,20 +10,35 @@
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="color-scheme" content="dark" />
     <meta name="theme-color" content="#0b0f14" />
+    <!--
+      Installability. `mobile-web-app-capable` is the standard directive;
+      `apple-mobile-web-app-capable` is its deprecated predecessor and stays for
+      older iOS. `apple-mobile-web-app-title` is what iOS actually puts under the
+      home-screen icon — without it iOS uses <title>, which it then truncates.
+    -->
+    <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="GitFrame" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta
       name="description"
-      content="Pull still frames out of a video on your phone. Runs entirely on your device — nothing is uploaded and nothing is stored."
+      content="Pull still frames out of a video on your phone. Runs entirely on your device — your video is never uploaded and never leaves the phone."
     />
     <title>GitFrame — video frame extractor</title>
     <link rel="icon" href="/icon.svg" type="image/svg+xml" />
+    <!--
+      iOS prefers apple-touch-icon over the manifest's icons, and with neither it
+      screenshots the page and uses that. Both are provided so iOS and Android each
+      find the icon where they look for it.
+    -->
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
     <header class="topbar">
       <h1 class="topbar__title">GitFrame</h1>
-      <p class="topbar__sub" id="privacy-note">On-device only · nothing uploaded · nothing stored</p>
+      <p class="topbar__sub" id="privacy-note">On-device only · nothing uploaded · nothing leaves your phone</p>
     </header>
 
     <main id="main">

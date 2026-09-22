@@ -37,7 +37,16 @@ describe('withSecurityHeaders', () => {
     expect(csp).toContain("connect-src 'self'");
   });
 
-  it('stores nothing on the device or in proxies', () => {
+  it('permits the manifest and the service worker explicitly', () => {
+    const csp = withSecurityHeaders(new Response('x')).headers.get('Content-Security-Policy') ?? '';
+    // Both would be allowed by the fallback chains anyway. They are named so
+    // that editing default-src or script-src cannot silently break installing
+    // the app or launching it offline.
+    expect(csp).toContain("manifest-src 'self'");
+    expect(csp).toContain("worker-src 'self'");
+  });
+
+  it('defeats HTTP caching in the browser and in proxies', () => {
     const headers = withSecurityHeaders(new Response('x')).headers;
     expect(headers.get('Cache-Control')).toBe('no-store, max-age=0');
     expect(headers.get('ETag')).toBeNull();
