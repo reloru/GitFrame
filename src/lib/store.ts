@@ -6,6 +6,8 @@
  * working app and a tab the OS kills.
  */
 
+import { findDuplicate, type DuplicateMatch, type GrabIdentity } from './dedupe.js';
+
 export interface Frame {
   readonly id: string;
   readonly time: number;
@@ -20,6 +22,10 @@ export interface Frame {
    * time order rather than inheriting whatever the gallery count happened to be.
    */
   readonly ext: string;
+  /** Which video this came from, so one clip's timeline can't collide with another's. */
+  readonly videoKey: string;
+  /** The output settings this was captured with — see `lib/dedupe.ts`. */
+  readonly signature: string;
 }
 
 export type StoreListener = (frames: readonly Frame[]) => void;
@@ -128,6 +134,16 @@ export class FrameStore {
 
   get(id: string): Frame | undefined {
     return this.frames.find((frame) => frame.id === id);
+  }
+
+  /**
+   * The already-captured frame `candidate` would duplicate, if any.
+   *
+   * A linear scan: the store is capped at a few hundred frames and this runs
+   * once per grab, so an index would cost more to keep correct than it saves.
+   */
+  findDuplicate(candidate: GrabIdentity): DuplicateMatch<Frame> | null {
+    return findDuplicate(this.frames, candidate);
   }
 
   remove(id: string): boolean {

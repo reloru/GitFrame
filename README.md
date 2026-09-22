@@ -50,6 +50,8 @@ The mobile requirements drove most of the design:
 
 - Frame-accurate stepping (±1 frame, ±1 second) at a configurable frame rate
 - Grab the current frame, or batch-extract every N seconds / N frames total
+- Duplicate grabs are flagged before they land: a frame already in the gallery
+  warns instead of capturing, and a second tap within the window keeps it anyway
 - PNG, JPG, or WebP output with a quality slider and longest-edge downscaling
 - Tap to select frames; download one as an image or many as a ZIP
 - Installs to the home screen and opens offline — there is nothing to talk to

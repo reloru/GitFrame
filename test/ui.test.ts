@@ -1,9 +1,42 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import type { TimerLike } from '../src/app/extractor.js';
 import { createApp, type AppHandle, type ShareCandidate, type ShareOutcome, type UiDeps } from '../src/app/ui.js';
 import { FakeCanvas } from './helpers/fakes.js';
 import { mountMarkup, patchVideo, setFiles, tick, type FakeMedia } from './helpers/dom.js';
+
+/**
+ * Timers the test drives by hand, so a window that lapses on its own can be
+ * made to lapse on demand. Only the app's own timers are faked; the async
+ * plumbing around them keeps running on the real clock.
+ */
+class ManualTimers implements TimerLike {
+  private nextId = 1;
+  private readonly pending = new Map<number, { handler: () => void; dueAt: number }>();
+  private now = 0;
+
+  setTimeout(handler: () => void, ms: number): unknown {
+    const id = this.nextId;
+    this.nextId += 1;
+    this.pending.set(id, { handler, dueAt: this.now + ms });
+    return id;
+  }
+
+  clearTimeout(handle: unknown): void {
+    this.pending.delete(handle as number);
+  }
+
+  /** Let `ms` elapse, firing everything that comes due. */
+  advance(ms: number): void {
+    this.now += ms;
+    for (const [id, entry] of [...this.pending]) {
+      if (entry.dueAt > this.now) continue;
+      this.pending.delete(id);
+      entry.handler();
+    }
+  }
+}
 
 interface Harness {
   app: AppHandle;
@@ -12,6 +45,7 @@ interface Harness {
   revoked: string[];
   canvas: FakeCanvas;
   shareCalls: Array<readonly ShareCandidate[]>;
+  timers?: ManualTimers;
   el: <T extends HTMLElement>(id: string) => T;
   click: (id: string) => void;
   loadVideo: (name?: string) => Promise<void>;
@@ -22,6 +56,7 @@ function setup(
     duration?: number;
     stall?: boolean;
     shareFiles?: (files: readonly ShareCandidate[]) => Promise<ShareOutcome>;
+    timers?: ManualTimers;
   } = {},
 ): Harness {
   mountMarkup(document);
@@ -43,6 +78,7 @@ function setup(
     triggerDownload: (blob, filename) => downloads.push({ blob, filename }),
     createCanvas: () => canvas,
     yieldToUi: () => Promise.resolve(),
+    ...(options.timers ? { timers: options.timers } : {}),
     ...(options.shareFiles
       ? {
           shareFiles: (files: readonly ShareCandidate[]) => {
@@ -66,6 +102,7 @@ function setup(
     revoked,
     canvas,
     shareCalls,
+    ...(options.timers ? { timers: options.timers } : {}),
     el,
     click,
     async loadVideo(name = 'My Clip.mp4') {
@@ -653,6 +690,146 @@ describe('grabbing a single frame', () => {
   });
 });
 
+describe('grabbing a duplicate frame', () => {
+  let timers: ManualTimers;
+  let h: Harness;
+
+  /** Long enough that a second tap reads as deliberate, well inside the window. */
+  const DELIBERATE_PAUSE_MS = 600;
+
+  beforeEach(async () => {
+    timers = new ManualTimers();
+    h = setup({ duration: 10, timers });
+    await h.loadVideo();
+    h.click('fwd-second');
+    h.click('grab-btn');
+    await h.app.whenIdle();
+  });
+
+  it('warns rather than grabbing the same frame twice', async () => {
+    h.click('grab-btn');
+    await h.app.whenIdle();
+
+    expect(h.app.store.count).toBe(1);
+    expect(h.el('toast').textContent).toBe(
+      'Already grabbed 0:01.000 — tap Grab again to keep a second copy',
+    );
+  });
+
+  it('keeps the copy when the warning is confirmed with a second tap', async () => {
+    h.click('grab-btn');
+    await h.app.whenIdle();
+    timers.advance(DELIBERATE_PAUSE_MS);
+    h.click('grab-btn');
+    await h.app.whenIdle();
+
+    expect(h.app.store.count).toBe(2);
+    expect(h.el('toast').textContent).toBe('Grabbed 0:01.000');
+  });
+
+  it('ignores the trailing tap of a stray double-tap', async () => {
+    h.click('grab-btn');
+    await h.app.whenIdle();
+    // No time passes: this is the same accident that produced the warning.
+    h.click('grab-btn');
+    await h.app.whenIdle();
+
+    expect(h.app.store.count).toBe(1);
+    expect(h.el('toast').textContent).toMatch(/^Already grabbed 0:01\.000/);
+
+    // The offer is still standing for a tap the user actually meant.
+    timers.advance(DELIBERATE_PAUSE_MS);
+    h.click('grab-btn');
+    await h.app.whenIdle();
+    expect(h.app.store.count).toBe(2);
+  });
+
+  it('warns again once the confirm window has lapsed', async () => {
+    h.click('grab-btn');
+    await h.app.whenIdle();
+    timers.advance(5000);
+
+    h.click('grab-btn');
+    await h.app.whenIdle();
+
+    expect(h.app.store.count).toBe(1);
+    expect(h.el('toast').textContent).toMatch(/^Already grabbed 0:01\.000/);
+  });
+
+  it('shows the warning for as long as the confirm window stays open', async () => {
+    h.click('grab-btn');
+    await h.app.whenIdle();
+    // Past an ordinary toast, but still inside the window it explains.
+    timers.advance(3000);
+    expect(h.el('toast').hidden).toBe(false);
+
+    h.click('grab-btn');
+    await h.app.whenIdle();
+    expect(h.app.store.count).toBe(2);
+  });
+
+  it('does not let a confirm carry over to a different frame', async () => {
+    h.click('grab-btn'); // warns about 0:01.000
+    await h.app.whenIdle();
+    timers.advance(DELIBERATE_PAUSE_MS);
+
+    h.click('fwd-second'); // now at 0:02.000, a frame of its own
+    h.click('grab-btn');
+    await h.app.whenIdle();
+    expect(h.el('toast').textContent).toBe('Grabbed 0:02.000');
+
+    // That grab must not have left 0:01.000 armed.
+    h.click('back-second');
+    h.click('grab-btn');
+    await h.app.whenIdle();
+
+    expect(h.app.store.count).toBe(2);
+    expect(h.el('toast').textContent).toMatch(/^Already grabbed 0:01\.000/);
+  });
+
+  it('names the existing output when only the settings differ', async () => {
+    const sizes = h.el('size-group').querySelectorAll('button');
+    (sizes[sizes.length - 1] as HTMLButtonElement).click(); // 720
+
+    h.click('grab-btn');
+    await h.app.whenIdle();
+
+    expect(h.app.store.count).toBe(1);
+    expect(h.el('toast').textContent).toBe(
+      'Already grabbed 0:01.000 at 1920×1080 JPG — tap Grab again for this one',
+    );
+
+    timers.advance(DELIBERATE_PAUSE_MS);
+    h.click('grab-btn');
+    await h.app.whenIdle();
+    expect(h.app.store.count).toBe(2);
+  });
+
+  it('treats the same timestamp in a different video as a new frame', async () => {
+    // The playhead stays where it was, so this is the same timestamp again.
+    await h.loadVideo('Another Clip.mp4');
+    h.click('grab-btn');
+    await h.app.whenIdle();
+
+    expect(h.app.store.count).toBe(2);
+    expect(h.el('toast').textContent).toBe('Grabbed 0:01.000');
+  });
+
+  it('drops a pending confirm when a different video is loaded', async () => {
+    h.click('grab-btn');
+    await h.app.whenIdle();
+    timers.advance(DELIBERATE_PAUSE_MS);
+
+    await h.loadVideo('Another Clip.mp4');
+    h.click('grab-btn');
+    await h.app.whenIdle();
+
+    // Grabbed on its own merits as a new video's frame, not as a confirmation.
+    expect(h.app.store.count).toBe(2);
+    expect(h.app.store.all[1]!.videoKey).not.toBe(h.app.store.all[0]!.videoKey);
+  });
+});
+
 describe('batch extraction', () => {
   it('extracts the whole plan and reports it', async () => {
     const h = setup({ duration: 10 });
@@ -748,6 +925,53 @@ describe('batch extraction', () => {
     const h = setup({ duration: 100000 });
     await h.loadVideo();
     expect(h.el('plan-summary').textContent).toContain('capped');
+  });
+
+  it('skips planned times already in the gallery and says how many', async () => {
+    const h = setup({ duration: 10 });
+    await h.loadVideo();
+    h.click('interval-plus'); // 2s apart -> 5 frames
+    h.click('auto-btn');
+    await h.app.whenIdle();
+
+    // Halving the interval re-plans the same five times plus five new ones.
+    h.click('interval-minus');
+    h.click('auto-btn');
+    await h.app.whenIdle();
+
+    expect(h.app.store.count).toBe(10);
+    expect(h.el('toast').textContent).toBe('Extracted 5 frames · 5 already grabbed');
+  });
+
+  it('runs nothing when every planned time is already grabbed', async () => {
+    const h = setup({ duration: 10 });
+    await h.loadVideo();
+    h.click('interval-plus');
+    h.click('auto-btn');
+    await h.app.whenIdle();
+
+    h.click('auto-btn');
+    await h.app.whenIdle();
+
+    expect(h.app.store.count).toBe(5);
+    expect(h.el('toast').textContent).toBe('All 5 frames are already grabbed');
+    expect(h.el('progress-overlay').hidden).toBe(true);
+  });
+
+  it('re-extracts the same times when the output settings change', async () => {
+    const h = setup({ duration: 10 });
+    await h.loadVideo();
+    h.click('interval-plus');
+    h.click('auto-btn');
+    await h.app.whenIdle();
+
+    const formats = h.el('format-group').querySelectorAll('button');
+    (formats[0] as HTMLButtonElement).click(); // PNG
+    h.click('auto-btn');
+    await h.app.whenIdle();
+
+    expect(h.app.store.count).toBe(10);
+    expect(h.el('toast').textContent).toBe('Extracted 5 frames');
   });
 });
 

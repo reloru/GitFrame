@@ -7,6 +7,12 @@
  */
 
 import { buildConsensusCrop, type ConsensusCrop } from '../lib/crop.js';
+import {
+  type GrabIdentity,
+  isSameGrab,
+  outputSignature,
+  videoKeyFor,
+} from '../lib/dedupe.js';
 import { IMAGE_FORMATS, formatBytes, formatById } from '../lib/format.js';
 import { frameFileName, sanitizeBaseName, uniqueName, zipFileName } from '../lib/naming.js';
 import { MAX_PLAN_FRAMES, buildPlan, describePlan } from '../lib/plan.js';
@@ -46,6 +52,24 @@ const CROP_SAMPLE_COUNT = 12;
 const CROP_PREVIEW_MAX_EDGE = 240;
 /** Per-side spread (native px) across samples worth calling out as "varies by scene". */
 const CROP_SPREAD_NOTABLE_PX = 12;
+/** How long a toast stays up. */
+const TOAST_MS = 2600;
+/**
+ * How long a warned-about duplicate stays armed for a confirming second tap.
+ * Deliberately equal to the duplicate toast's lifetime: the offer is live for
+ * exactly as long as the message explaining it is on screen, so a tap after it
+ * fades warns again rather than silently grabbing.
+ */
+const DUPLICATE_CONFIRM_MS = 4200;
+/**
+ * Dead time after the warning during which a second tap is swallowed rather
+ * than taken as confirmation. Without it an accidental double-tap — the very
+ * accident this check exists to catch — would confirm its own warning before
+ * the warning could be read. Chosen to sit above the gap inside a stray
+ * double-tap and below the pause before a deliberate second tap; it is a
+ * judgement call, not a measured threshold.
+ */
+const DUPLICATE_ARM_DELAY_MS = 300;
 
 export type ShareOutcome = 'shared' | 'cancelled' | 'unsupported';
 
@@ -166,6 +190,12 @@ export function createApp(deps: UiDeps): AppHandle {
   let abort: AbortController | null = null;
   let toastTimer: unknown;
   let scrubbing = false;
+  /** Identity of the loaded video, so frames from different clips never collide. */
+  let videoKey = '';
+  /** A duplicate the user has been warned about; a matching second tap grabs it. */
+  let armedDuplicate: { readonly grab: GrabIdentity; ready: boolean } | null = null;
+  let armedReadyTimer: unknown;
+  let armedExpiryTimer: unknown;
 
   const timers: TimerLike = deps.timers ?? {
     setTimeout: (handler, ms) => setTimeout(handler, ms),
@@ -185,13 +215,13 @@ export function createApp(deps: UiDeps): AppHandle {
   /* Feedback                                                          */
   /* ---------------------------------------------------------------- */
 
-  function toast(message: string): void {
+  function toast(message: string, durationMs: number = TOAST_MS): void {
     el.toast.textContent = message;
     el.toast.hidden = false;
     timers.clearTimeout(toastTimer);
     toastTimer = timers.setTimeout(() => {
       el.toast.hidden = true;
-    }, 2600);
+    }, durationMs);
   }
 
   function showError(message: string): void {
@@ -445,6 +475,9 @@ export function createApp(deps: UiDeps): AppHandle {
     releaseSource();
     sourceUrl = deps.createObjectURL(file);
     baseName = sanitizeBaseName(file.name);
+    videoKey = videoKeyFor(file);
+    // Whatever was armed belonged to the old timeline.
+    disarmDuplicate();
     // A trim range and a detected crop are both properties of the clip they
     // were set on, not a lasting preference — carrying either into an
     // unrelated video would silently clip it in a way the user never asked for.
@@ -590,7 +623,13 @@ export function createApp(deps: UiDeps): AppHandle {
     });
   }
 
-  function toFrame(time: number, blob: Blob, width: number, height: number): Frame {
+  function toFrame(
+    time: number,
+    blob: Blob,
+    width: number,
+    height: number,
+    signature: string,
+  ): Frame {
     return {
       id: store.nextId(),
       time,
@@ -599,6 +638,8 @@ export function createApp(deps: UiDeps): AppHandle {
       width,
       height,
       ext: formatById(settings.formatId).ext,
+      videoKey,
+      signature,
     };
   }
 
@@ -618,17 +659,78 @@ export function createApp(deps: UiDeps): AppHandle {
     return busy;
   }
 
+  function disarmDuplicate(): void {
+    armedDuplicate = null;
+    timers.clearTimeout(armedReadyTimer);
+    timers.clearTimeout(armedExpiryTimer);
+  }
+
+  /**
+   * Hold a warned-about grab open for a confirming second tap. The window is
+   * silent — nothing counts down on screen — and lapses on its own.
+   */
+  function armDuplicate(candidate: GrabIdentity): void {
+    disarmDuplicate();
+    const armed = { grab: candidate, ready: false };
+    armedDuplicate = armed;
+    armedReadyTimer = timers.setTimeout(() => {
+      armed.ready = true;
+    }, DUPLICATE_ARM_DELAY_MS);
+    armedExpiryTimer = timers.setTimeout(() => {
+      if (armedDuplicate === armed) armedDuplicate = null;
+    }, DUPLICATE_CONFIRM_MS);
+  }
+
+  /** What the current settings and playhead would capture. */
+  function currentGrab(): GrabIdentity {
+    return { videoKey, time: video.currentTime, signature: outputSignature(settings) };
+  }
+
   async function grabCurrentFrame(): Promise<void> {
     if (store.isFull) {
       toast(`Frame limit reached (${store.count}). Export or clear first.`);
       return;
     }
+
+    const candidate = currentGrab();
+    // A second tap only confirms the grab it was armed for. Nudge the playhead
+    // or change a setting in between and this is a different frame, which falls
+    // through to its own duplicate check.
+    const armed = armedDuplicate;
+    const matchesArmed = armed !== null && isSameGrab(armed.grab, candidate);
+    if (matchesArmed && !armed.ready) {
+      // Part of the same stray double-tap as the warning. Swallow it and leave
+      // the offer standing rather than acting on a tap nobody chose to make.
+      return;
+    }
+
+    const confirming = matchesArmed;
+    disarmDuplicate();
+
+    if (!confirming) {
+      const duplicate = store.findDuplicate(candidate);
+      if (duplicate) {
+        armDuplicate(candidate);
+        const at = formatTimecode(duplicate.frame.time);
+        toast(
+          duplicate.kind === 'exact'
+            ? `Already grabbed ${at} — tap Grab again to keep a second copy`
+            : `Already grabbed ${at} at ${duplicate.frame.width}×${duplicate.frame.height} ` +
+                `${duplicate.frame.ext.toUpperCase()} — tap Grab again for this one`,
+          DUPLICATE_CONFIRM_MS,
+        );
+        return;
+      }
+    }
+
     el.grabBtn.disabled = true;
     try {
       const renderer = makeRenderer(settings.maxEdge);
       const { blob, size } = await renderer.render(video);
-      const added = store.add(toFrame(video.currentTime, blob, size.width, size.height));
-      toast(added ? `Grabbed ${formatTimecode(video.currentTime)}` : 'Frame limit reached');
+      const added = store.add(
+        toFrame(candidate.time, blob, size.width, size.height, candidate.signature),
+      );
+      toast(added ? `Grabbed ${formatTimecode(candidate.time)}` : 'Frame limit reached');
     } catch (error) {
       toast(error instanceof Error ? error.message : 'Could not grab that frame');
     } finally {
@@ -663,10 +765,30 @@ export function createApp(deps: UiDeps): AppHandle {
       return;
     }
 
+    // A batch never asks — a confirmation sheet part-way through a few hundred
+    // frames would be unusable on a phone. Only captures that would be
+    // identical are dropped, before the run starts, which also saves the seek
+    // and the encode for each. Re-running after changing format, size or crop
+    // is a deliberate request for a different rendering of those moments, so
+    // those are captured rather than skipped; the single-frame path warns about
+    // them instead, where one extra tap is a fair price for the choice.
+    const signature = outputSignature(settings);
+    const times = plan.times.filter(
+      (time) => store.findDuplicate({ videoKey, time, signature })?.kind !== 'exact',
+    );
+    const skipped = plan.times.length - times.length;
+    if (times.length === 0) {
+      toast(
+        skipped === 1 ? 'That frame is already grabbed' : `All ${skipped} frames are already grabbed`,
+      );
+      return;
+    }
+
+    disarmDuplicate();
     const resumeAt = video.currentTime;
     abort = new AbortController();
     openOverlay('Extracting frames…');
-    setProgress(0, plan.times.length);
+    setProgress(0, times.length);
     el.autoBtn.disabled = true;
 
     try {
@@ -674,14 +796,20 @@ export function createApp(deps: UiDeps): AppHandle {
       const pending: Frame[] = [];
       const result = await extractFrames({
         video,
-        times: plan.times,
+        times,
         renderer,
         signal: abort.signal,
         timers,
         ...(deps.yieldToUi ? { yieldToUi: deps.yieldToUi } : {}),
         onFrame: (captured) => {
           pending.push(
-            toFrame(captured.time, captured.blob, captured.size.width, captured.size.height),
+            toFrame(
+              captured.time,
+              captured.blob,
+              captured.size.width,
+              captured.size.height,
+              signature,
+            ),
           );
         },
         onProgress: (progress) => {
@@ -695,12 +823,13 @@ export function createApp(deps: UiDeps): AppHandle {
 
       store.addMany(pending);
 
+      const alreadyHad = skipped > 0 ? ` · ${skipped} already grabbed` : '';
       if (result.cancelled) {
-        toast(`Stopped — kept ${result.frames.length} frames`);
+        toast(`Stopped — kept ${result.frames.length} frames${alreadyHad}`);
       } else if (result.failures.length > 0) {
-        toast(`Got ${result.frames.length}, skipped ${result.failures.length}`);
+        toast(`Got ${result.frames.length}, skipped ${result.failures.length}${alreadyHad}`);
       } else {
-        toast(`Extracted ${result.frames.length} frames`);
+        toast(`Extracted ${result.frames.length} frames${alreadyHad}`);
       }
     } catch (error) {
       toast(error instanceof Error ? error.message : 'Extraction failed');
@@ -1027,6 +1156,8 @@ export function createApp(deps: UiDeps): AppHandle {
     whenIdle: () => busy,
     destroy(): void {
       abort?.abort();
+      disarmDuplicate();
+      timers.clearTimeout(toastTimer);
       releaseSource();
       releaseCropPreview();
       store.clear();
