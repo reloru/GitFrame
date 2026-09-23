@@ -27,6 +27,8 @@ import {
   DEFAULT_FPS,
   MAX_FPS,
   clamp,
+  STANDARD_FPS,
+  formatFps,
   formatShortDuration,
   formatTimecode,
   frameDuration,
@@ -34,11 +36,49 @@ import {
   isUsableTime,
   normalizeFps,
   stepByFrames,
+  stepStandardFps,
+  stepWholeFps,
   timeForFrame,
   timecodeSlug,
 } from '../src/lib/time.js';
 
 describe('time', () => {
+  it('steps whole frame rates, landing on the whole number first from a fractional one', () => {
+    expect(stepWholeFps(30, 1)).toBe(31);
+    expect(stepWholeFps(30, -1)).toBe(29);
+    expect(stepWholeFps(30000 / 1001, 1)).toBe(30);
+    expect(stepWholeFps(30000 / 1001, -1)).toBe(29);
+    expect(stepWholeFps(1.55, 1)).toBe(2);
+    expect(stepWholeFps(1.55, -1)).toBe(1);
+    expect(stepWholeFps(1, -1)).toBe(1);
+    expect(stepWholeFps(240, 1)).toBe(240);
+  });
+
+  it('moves through the standard rates in order and stops at either end', () => {
+    const ntsc = 30000 / 1001;
+    expect(stepStandardFps(ntsc, 1)).toBe(30);
+    expect(stepStandardFps(ntsc, -1)).toBe(25);
+    // A typed 29.97 counts as the NTSC rate, not as something just below it.
+    expect(stepStandardFps(29.97, 1)).toBe(30);
+    expect(stepStandardFps(29.97, -1)).toBe(25);
+    // From a rate that isn't standard, to the nearest standard one each way.
+    expect(stepStandardFps(40, 1)).toBe(50);
+    expect(stepStandardFps(40, -1)).toBe(30);
+    expect(stepStandardFps(STANDARD_FPS[0]!, -1)).toBe(STANDARD_FPS[0]);
+    expect(stepStandardFps(240, 1)).toBe(240);
+    // Walking up visits every standard rate exactly once.
+    const seen = [STANDARD_FPS[0]!];
+    while (seen.length < 20 && stepStandardFps(seen.at(-1)!, 1) !== seen.at(-1)) seen.push(stepStandardFps(seen.at(-1)!, 1));
+    expect(seen).toEqual([...STANDARD_FPS]);
+  });
+
+  it('shows frame rates the way they are usually written', () => {
+    expect(formatFps(24000 / 1001)).toBe('23.976');
+    expect(formatFps(30000 / 1001)).toBe('29.97');
+    expect(formatFps(60)).toBe('60');
+    expect(formatFps(0)).toBe(String(DEFAULT_FPS));
+  });
+
   it('clamps into range and treats NaN as the floor', () => {
     expect(clamp(5, 0, 10)).toBe(5);
     expect(clamp(-3, 0, 10)).toBe(0);
@@ -254,6 +294,14 @@ describe('plan', () => {
     expect(plan.times).toHaveLength(10);
   });
 
+  it('does not lose the last frame of a range exactly N frames long', () => {
+    // 300 frames at 29.97 fps: span / step lands a hair under 300 in floating point.
+    const fps = 30000 / 1001;
+    const plan = buildPlan({ mode: 'every-frame', duration: 60, start: 1, end: 1 + 300 / fps, fps });
+    expect(plan.times).toHaveLength(300);
+    expect(plan.truncated).toBe(false);
+  });
+
   it('honours in/out points', () => {
     const plan = buildPlan({
       mode: 'interval',
@@ -357,6 +405,11 @@ describe('settings', () => {
 
   it('keeps count mode when asked', () => {
     expect(normalizeSettings({ mode: 'count' }).mode).toBe('count');
+  });
+
+  it('keeps every-frame mode when asked', () => {
+    expect(normalizeSettings({ mode: 'every-frame' }).mode).toBe('every-frame');
+    expect(normalizeSettings({ mode: 'every-other' }).mode).toBe('interval');
   });
 
   it('defaults crop to null and passes an already-computed one through', () => {

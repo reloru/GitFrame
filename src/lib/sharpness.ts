@@ -43,9 +43,17 @@ export function blurEffect(image: RGBAImage): number | null {
   if (width < 2 || height < 2) return null;
 
   const luma = new Float32Array(width * height);
+  let lowest = Infinity;
+  let highest = -Infinity;
   for (let i = 0, p = 0; i < luma.length; i += 1, p += 4) {
-    luma[i] = data[p]! * 0.299 + data[p + 1]! * 0.587 + data[p + 2]! * 0.114;
+    const y = data[p]! * 0.299 + data[p + 1]! * 0.587 + data[p + 2]! * 0.114;
+    luma[i] = y;
+    if (y < lowest) lowest = y;
+    if (y > highest) highest = y;
   }
+  // A flat frame (a fade to black, a lens cap) has no variation to judge; the
+  // filters below would only arrive at the same answer the long way round.
+  if (lowest === highest) return null;
 
   const smoothed = median3x3(luma, width, height);
   const vertical = axisBlur(smoothed, height, width, width, 1);

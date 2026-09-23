@@ -451,6 +451,12 @@ main {
   font-size: 13px;
 }
 
+.field__note {
+  margin: 0;
+  color: var(--muted);
+  font-size: 14px;
+}
+
 /* Range picker — tap "Set start"/"Set end" to mark the scrubber's position */
 .range-picker {
   display: flex;
@@ -621,6 +627,12 @@ main {
   cursor: pointer;
   touch-action: manipulation;
   flex: 0 0 auto;
+}
+
+/* Four buttons share this row; 48px keeps each at the minimum tap size and
+   leaves the value room for rates like 23.976 on a 375px-wide phone. */
+.stepper--fps .stepper__btn {
+  width: 48px;
 }
 
 .stepper__btn:active {

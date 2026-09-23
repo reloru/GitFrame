@@ -146,7 +146,9 @@ describe('committed icons', () => {
       committed.set(raw.subarray(y * (stride + 1) + 1, (y + 1) * (stride + 1)), y * stride);
     }
     expect(Buffer.compare(committed, rasterize(size, scale)), `${file} is ${stale}`).toBe(0);
-  });
+    // Redrawing a 512 px icon with 16 samples per pixel takes seconds, more on a
+    // loaded CI runner; the default 5 s would make this check flaky, not stricter.
+  }, 30_000);
 
   it('has an SVG favicon drawn from the same geometry', () => {
     expect(readFileSync(resolve(root, ICON_DIR, 'icon.svg'), 'utf8'), `icon.svg is ${stale}`).toBe(iconSvg());
