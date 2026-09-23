@@ -144,7 +144,12 @@
               <button type="button" class="segmented__btn" id="mode-count" role="radio" aria-checked="false">
                 N frames total
               </button>
+              <button type="button" class="segmented__btn" id="mode-every" role="radio" aria-checked="false">
+                Every frame
+              </button>
             </div>
+
+            <p class="field__note" id="every-frame-note" hidden></p>
 
             <div class="field" id="interval-field">
               <label class="field__label" for="interval-input">Seconds between frames</label>
@@ -230,7 +235,7 @@
 
             <div class="field">
               <label class="field__label" for="fps-input">
-                Frame rate <span class="field__hint">used by the frame-step buttons</span>
+                Frame rate <span class="field__hint" id="fps-hint">used by the frame-step buttons</span>
               </label>
               <div class="stepper">
                 <button type="button" class="stepper__btn" id="fps-minus" aria-label="Lower frame rate">−</button>

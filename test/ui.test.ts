@@ -57,6 +57,7 @@ function setup(
     stall?: boolean;
     shareFiles?: (files: readonly ShareCandidate[]) => Promise<ShareOutcome>;
     timers?: ManualTimers;
+    readFrameTiming?: UiDeps['readFrameTiming'];
   } = {},
 ): Harness {
   mountMarkup(document);
@@ -79,6 +80,7 @@ function setup(
     createCanvas: () => canvas,
     yieldToUi: () => Promise.resolve(),
     ...(options.timers ? { timers: options.timers } : {}),
+    ...(options.readFrameTiming ? { readFrameTiming: options.readFrameTiming } : {}),
     ...(options.shareFiles
       ? {
           shareFiles: (files: readonly ShareCandidate[]) => {
@@ -388,6 +390,195 @@ describe('settings', () => {
     expect(h.el('plan-summary').textContent).toContain('10 frames');
     h.click('interval-plus');
     expect(h.el('plan-summary').textContent).toContain('5 frames');
+  });
+});
+
+describe('frame rate from the file', () => {
+  const timing = (fps: number, constant = true) => () => Promise.resolve({ fps, constant, frames: 100 });
+
+  it('fills the frame rate in from the video file', async () => {
+    const h = setup({ duration: 10, readFrameTiming: timing(30000 / 1001) });
+    await h.loadVideo();
+    await tick();
+    expect(h.app.settings.fps).toBeCloseTo(29.97003, 5);
+    expect(h.el<HTMLInputElement>('fps-input').value).toBe('29.97');
+    expect(h.el('fps-hint').textContent).toBe('read from the video file');
+  });
+
+  it('steps exactly one frame at the rate it read', async () => {
+    const h = setup({ duration: 10, readFrameTiming: timing(60) });
+    await h.loadVideo();
+    await tick();
+    h.click('fwd-frame');
+    h.click('fwd-frame');
+    expect(h.el<HTMLVideoElement>('video').currentTime).toBeCloseTo(2 / 60, 6);
+  });
+
+  it('says so when the file stores no frame rate, and keeps the field for the user', async () => {
+    const h = setup({ duration: 10, readFrameTiming: () => Promise.resolve(null) });
+    await h.loadVideo();
+    await tick();
+    expect(h.app.settings.fps).toBe(30);
+    expect(h.el('fps-hint').textContent).toBe('not stored in this file; set it to match the video');
+  });
+
+  it('treats a failed read like a file with no rate', async () => {
+    const h = setup({ duration: 10, readFrameTiming: () => Promise.reject(new Error('boom')) });
+    await h.loadVideo();
+    await tick();
+    expect(h.el('fps-hint').textContent).toBe('not stored in this file; set it to match the video');
+  });
+
+  it('ignores a slow read that finishes after another video was picked', async () => {
+    let finishFirst: (value: { fps: number; constant: boolean; frames: number }) => void = () => {};
+    const reads = [
+      new Promise<{ fps: number; constant: boolean; frames: number }>((resolve) => {
+        finishFirst = resolve;
+      }),
+      Promise.resolve({ fps: 24, constant: true, frames: 10 }),
+    ];
+    let call = 0;
+    const h = setup({ duration: 10, readFrameTiming: () => reads[call++]! });
+    await h.loadVideo('first.mov');
+    await h.loadVideo('second.mov');
+    await tick();
+    finishFirst({ fps: 120, constant: true, frames: 10 });
+    await tick();
+    expect(h.app.settings.fps).toBe(24);
+  });
+
+  it('marks a typed rate as the user\'s, and steps whole numbers from a fractional one', async () => {
+    const h = setup({ duration: 10, readFrameTiming: timing(30000 / 1001) });
+    await h.loadVideo();
+    await tick();
+    h.click('fps-plus');
+    expect(h.app.settings.fps).toBe(31);
+    expect(h.el('fps-hint').textContent).toBe('set by you');
+  });
+});
+
+describe('every-frame mode', () => {
+  function scrubTo(h: Harness, seconds: number): void {
+    const scrub = h.el<HTMLInputElement>('scrub');
+    scrub.value = String(seconds);
+    scrub.dispatchEvent(new Event('input'));
+    scrub.dispatchEvent(new Event('change'));
+  }
+
+  async function everyFrame(duration: number, fps = 30, constant = true): Promise<Harness> {
+    const h = setup({ duration, readFrameTiming: () => Promise.resolve({ fps, constant, frames: 1 }) });
+    await h.loadVideo();
+    await tick();
+    // These runs capture hundreds of frames; scoring each full-size test
+    // image for sharpness would dominate the run time and isn't under test.
+    h.canvas.context.imageData = () => ({ data: new Uint8ClampedArray(4), width: 1, height: 1 });
+    h.click('mode-every');
+    return h;
+  }
+
+  it('is offered alongside the other two modes', async () => {
+    const h = await everyFrame(5);
+    expect(h.el('mode-every').getAttribute('aria-checked')).toBe('true');
+    expect(h.el('mode-interval').getAttribute('aria-checked')).toBe('false');
+    expect(h.el('interval-field').hidden).toBe(true);
+    expect(h.el('count-field').hidden).toBe(true);
+    // A 5 s clip at 30 fps fits in one run: every frame, nothing capped.
+    expect(h.el('plan-summary').textContent).toMatch(/^150 frames/);
+  });
+
+  it('states how much one run can cover at the clip\'s frame rate', async () => {
+    const h = await everyFrame(20, 60);
+    const note = h.el('every-frame-note');
+    expect(note.hidden).toBe(false);
+    expect(note.textContent).toContain('At 60 fps, one run covers up to 5.00 s (300 frames).');
+  });
+
+  it('locks a range that is too long to the longest one that fits, instead of thinning it', async () => {
+    const h = await everyFrame(20, 30);
+    expect(h.app.settings.rangeEnd).toBeCloseTo(10, 6);
+    expect(h.el('toast').textContent).toBe('Every frame: range limited to 10.00 s at 30 fps');
+    expect(h.el('plan-summary').textContent).toMatch(/^300 frames/);
+    expect(h.el('plan-summary').textContent).not.toContain('capped');
+  });
+
+  it('moves the end with the start', async () => {
+    const h = await everyFrame(20, 30);
+    scrubTo(h, 4);
+    h.click('range-start-btn');
+    expect(h.app.settings.rangeStart).toBe(4);
+    expect(h.app.settings.rangeEnd).toBeCloseTo(14, 6);
+
+    // Near the end of the clip, the range simply runs to the end.
+    scrubTo(h, 15);
+    h.click('range-start-btn');
+    expect(h.app.settings.rangeEnd).toBe(0);
+    expect(h.el('range-end-time').textContent).toBe('End of clip');
+  });
+
+  it('pulls an end set too far back in, and says so', async () => {
+    const h = await everyFrame(20, 30);
+    scrubTo(h, 2);
+    h.click('range-start-btn');
+    scrubTo(h, 18);
+    h.click('range-end-btn');
+    expect(h.app.settings.rangeEnd).toBeCloseTo(12, 6);
+    expect(h.el('toast').textContent).toBe('Every frame: range limited to 10.00 s at 30 fps');
+  });
+
+  it('keeps a shorter end the user chose', async () => {
+    const h = await everyFrame(20, 30);
+    scrubTo(h, 3);
+    h.click('range-end-btn');
+    expect(h.app.settings.rangeEnd).toBe(3);
+  });
+
+  it('limits "use whole clip" too', async () => {
+    const h = await everyFrame(20, 30);
+    scrubTo(h, 5);
+    h.click('range-start-btn');
+    h.click('range-reset');
+    expect(h.app.settings.rangeStart).toBe(0);
+    expect(h.app.settings.rangeEnd).toBeCloseTo(10, 6);
+  });
+
+  it('re-limits when the frame rate changes', async () => {
+    const h = await everyFrame(20, 24);
+    expect(h.app.settings.rangeEnd).toBeCloseTo(12.5, 6);
+    const fps = h.el<HTMLInputElement>('fps-input');
+    fps.value = '60';
+    fps.dispatchEvent(new Event('change'));
+    expect(h.app.settings.rangeEnd).toBeCloseTo(5, 6);
+  });
+
+  it('captures every frame in the range, one frame apart', async () => {
+    const h = await everyFrame(3, 30);
+    h.click('auto-btn');
+    await h.app.whenIdle();
+    const times = h.app.store.all.map((f) => f.time);
+    expect(times).toHaveLength(90);
+    // Plan times are rounded to 0.1 ms, well inside a frame even at 240 fps.
+    for (let i = 1; i < times.length; i += 1) expect(times[i]! - times[i - 1]!).toBeCloseTo(1 / 30, 3);
+  });
+
+  it('shrinks the range as the gallery fills, so a run is never thinned', async () => {
+    const h = await everyFrame(40, 30);
+    h.click('auto-btn');
+    await h.app.whenIdle();
+    expect(h.app.store.count).toBe(300);
+    // 200 slots left in the 500-frame gallery: 200 frames at 30 fps.
+    expect(h.app.settings.rangeEnd).toBeCloseTo(200 / 30, 6);
+    expect(h.el('plan-summary').textContent).toMatch(/^200 frames/);
+  });
+
+  it('warns that some captures may repeat when the frame rate varies', async () => {
+    const h = await everyFrame(5, 60, false);
+    expect(h.el('every-frame-note').textContent).toContain('The frame rate varies in this clip');
+  });
+
+  it('hides its note in the other modes', async () => {
+    const h = await everyFrame(5);
+    h.click('mode-interval');
+    expect(h.el('every-frame-note').hidden).toBe(true);
   });
 });
 

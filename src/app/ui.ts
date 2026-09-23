@@ -14,6 +14,7 @@ import {
   videoKeyFor,
 } from '../lib/dedupe.js';
 import { IMAGE_FORMATS, formatBytes, formatById } from '../lib/format.js';
+import { type BlobLike, type FrameTiming, readFrameTiming } from '../lib/mp4.js';
 import { frameFileName, sanitizeBaseName, uniqueName, zipFileName } from '../lib/naming.js';
 import { MAX_PLAN_FRAMES, buildPlan, describePlan } from '../lib/plan.js';
 import { SIZE_PRESETS, fitToMaxEdge } from '../lib/scale.js';
@@ -31,8 +32,10 @@ import {
   MAX_FPS,
   MIN_FPS,
   clamp,
+  formatFps,
   formatShortDuration,
   formatTimecode,
+  frameDuration,
   normalizeFps,
   stepByFrames,
 } from '../lib/time.js';
@@ -53,6 +56,13 @@ const CROP_SAMPLE_COUNT = 12;
 const CROP_PREVIEW_MAX_EDGE = 240;
 /** Per-side spread (native px) across samples worth calling out as "varies by scene". */
 const CROP_SPREAD_NOTABLE_PX = 12;
+/** What the frame-rate field's hint says, by where the value came from. */
+const FPS_HINTS = {
+  default: 'used by the frame-step buttons',
+  file: 'read from the video file',
+  unreadable: 'not stored in this file; set it to match the video',
+  user: 'set by you',
+} as const;
 /** How long a toast stays up. */
 const TOAST_MS = 2600;
 /**
@@ -93,6 +103,8 @@ export interface UiDeps {
    * 'unsupported', export falls back to a direct/zip download.
    */
   readonly shareFiles?: (files: readonly ShareCandidate[]) => Promise<ShareOutcome>;
+  /** Reads the frame rate stored in the file; defaults to the MP4/MOV reader. */
+  readonly readFrameTiming?: (file: BlobLike) => Promise<FrameTiming | null>;
 }
 
 export interface AppHandle {
@@ -140,6 +152,8 @@ export function createApp(deps: UiDeps): AppHandle {
     rangeReset: must<HTMLButtonElement>(doc, 'range-reset'),
     modeInterval: must<HTMLButtonElement>(doc, 'mode-interval'),
     modeCount: must<HTMLButtonElement>(doc, 'mode-count'),
+    modeEvery: must<HTMLButtonElement>(doc, 'mode-every'),
+    everyFrameNote: must<HTMLElement>(doc, 'every-frame-note'),
     intervalField: must<HTMLElement>(doc, 'interval-field'),
     intervalInput: must<HTMLInputElement>(doc, 'interval-input'),
     intervalMinus: must<HTMLButtonElement>(doc, 'interval-minus'),
@@ -163,6 +177,7 @@ export function createApp(deps: UiDeps): AppHandle {
     fpsInput: must<HTMLInputElement>(doc, 'fps-input'),
     fpsMinus: must<HTMLButtonElement>(doc, 'fps-minus'),
     fpsPlus: must<HTMLButtonElement>(doc, 'fps-plus'),
+    fpsHint: must<HTMLElement>(doc, 'fps-hint'),
     changeVideo: must<HTMLButtonElement>(doc, 'change-video'),
     gallerySection: must<HTMLElement>(doc, 'gallery-section'),
     gallery: must<HTMLElement>(doc, 'gallery'),
@@ -199,6 +214,12 @@ export function createApp(deps: UiDeps): AppHandle {
   let armedDuplicate: { readonly grab: GrabIdentity; ready: boolean } | null = null;
   let armedReadyTimer: unknown;
   let armedExpiryTimer: unknown;
+  /**
+   * Where the frame rate came from: read from the file, typed by the user, or
+   * neither yet. `varies` is set when the file's frame durations are uneven.
+   */
+  let fpsSource: 'default' | 'file' | 'unreadable' | 'user' = 'default';
+  let fpsVaries = false;
 
   const timers: TimerLike = deps.timers ?? {
     setTimeout: (handler, ms) => setTimeout(handler, ms),
@@ -298,21 +319,72 @@ export function createApp(deps: UiDeps): AppHandle {
     el.qualityField.hidden = !format.lossy;
     el.quality.value = String(Math.round(settings.quality * 100));
     el.qualityValue.textContent = `${Math.round(settings.quality * 100)}%`;
-    el.fpsInput.value = String(settings.fps);
+    el.fpsInput.value = formatFps(settings.fps);
+    el.fpsHint.textContent = FPS_HINTS[fpsSource];
     el.intervalInput.value = String(settings.intervalSeconds);
     el.countInput.value = String(settings.frameCount);
 
-    const isInterval = settings.mode === 'interval';
-    el.intervalField.hidden = !isInterval;
-    el.countField.hidden = isInterval;
-    el.modeInterval.classList.toggle('is-active', isInterval);
-    el.modeCount.classList.toggle('is-active', !isInterval);
-    el.modeInterval.setAttribute('aria-checked', isInterval ? 'true' : 'false');
-    el.modeCount.setAttribute('aria-checked', isInterval ? 'false' : 'true');
+    enforceEveryFrameLimit();
+    const modes = [
+      [el.modeInterval, 'interval'],
+      [el.modeCount, 'count'],
+      [el.modeEvery, 'every-frame'],
+    ] as const;
+    for (const [button, mode] of modes) {
+      const active = settings.mode === mode;
+      button.classList.toggle('is-active', active);
+      button.setAttribute('aria-checked', active ? 'true' : 'false');
+    }
+    el.intervalField.hidden = settings.mode !== 'interval';
+    el.countField.hidden = settings.mode !== 'count';
+    renderEveryFrameNote();
 
     renderRange();
     renderCrop();
     renderPlanSummary();
+  }
+
+  /** Most frames one run may produce: the plan cap, or what's left of the gallery if less. */
+  function frameCap(): number {
+    return Math.min(MAX_PLAN_FRAMES, Math.max(1, store.remainingCapacity));
+  }
+
+  /** Longest range every-frame mode can cover without skipping a frame. */
+  function everyFrameLimit(): number {
+    return frameCap() * frameDuration(settings.fps);
+  }
+
+  /**
+   * In every-frame mode, pull the end of the range in so the range never holds
+   * more frames than one run can capture. Thinning the frames instead would
+   * defeat the point of the mode. Returns true when the range was changed.
+   */
+  function enforceEveryFrameLimit(): boolean {
+    if (settings.mode !== 'every-frame') return false;
+    const duration = Number.isFinite(video.duration) ? video.duration : 0;
+    if (duration <= 0 || !isRangeValid()) return false;
+    const end = settings.rangeEnd > 0 ? settings.rangeEnd : duration;
+    const limit = everyFrameLimit();
+    if (end - settings.rangeStart <= limit + 1e-6) return false;
+    settings.rangeEnd = settings.rangeStart + limit;
+    return true;
+  }
+
+  function renderEveryFrameNote(): void {
+    el.everyFrameNote.hidden = settings.mode !== 'every-frame';
+    if (el.everyFrameNote.hidden) return;
+    const seconds = everyFrameLimit();
+    const varies = fpsVaries
+      ? ' The frame rate varies in this clip, so some captures may repeat a frame.'
+      : '';
+    el.everyFrameNote.textContent =
+      `At ${formatFps(settings.fps)} fps, one run covers up to ${seconds.toFixed(2)} s ` +
+      `(${frameCap()} frames). Set a start and the end follows.${varies}`;
+  }
+
+  /** Tell the user their range was shortened, in every-frame mode's terms. */
+  function toastLimited(): void {
+    toast(`Every frame: range limited to ${everyFrameLimit().toFixed(2)} s at ${formatFps(settings.fps)} fps`);
   }
 
   /** Whether the range fields describe a usable (non-empty, ordered) span. */
@@ -435,9 +507,15 @@ export function createApp(deps: UiDeps): AppHandle {
     el.fpsPlus,
     () => settings.fps,
     (value) => {
-      settings.fps = normalizeFps(value, settings.fps);
+      const next = normalizeFps(value, settings.fps);
+      if (next !== settings.fps) {
+        settings.fps = next;
+        fpsSource = 'user';
+        fpsVaries = false;
+      }
     },
-    (value, direction) => clamp(value + direction, MIN_FPS, MAX_FPS),
+    // Whole steps from a file's fractional rate: 29.97 steps to 29 or 31.
+    (value, direction) => clamp(Math.round(value) + direction, MIN_FPS, MAX_FPS),
   );
 
   on(el.quality, 'input', () => {
@@ -451,6 +529,11 @@ export function createApp(deps: UiDeps): AppHandle {
   });
   on(el.modeCount, 'click', () => {
     settings.mode = 'count';
+    renderSettings();
+  });
+  on(el.modeEvery, 'click', () => {
+    settings.mode = 'every-frame';
+    if (enforceEveryFrameLimit()) toastLimited();
     renderSettings();
   });
 
@@ -488,6 +571,7 @@ export function createApp(deps: UiDeps): AppHandle {
     settings.rangeEnd = 0;
     settings.crop = null;
     releaseCropPreview();
+    void applyFrameTiming(file, videoKey);
     video.src = sourceUrl;
     try {
       video.load();
@@ -497,6 +581,31 @@ export function createApp(deps: UiDeps): AppHandle {
     }
     el.emptyState.hidden = true;
     el.workspace.hidden = false;
+  }
+
+  /**
+   * Take the frame rate from the file when it records one. A rate the user
+   * typed for an earlier clip is not carried over as if it were known: a file
+   * that stores no rate says so, and the field keeps its value for them to set.
+   */
+  async function applyFrameTiming(file: File, key: string): Promise<void> {
+    let timing: FrameTiming | null = null;
+    try {
+      timing = await (deps.readFrameTiming ?? readFrameTiming)(file);
+    } catch {
+      timing = null;
+    }
+    // A different video was picked while this one was being read.
+    if (key !== videoKey) return;
+    if (timing) {
+      settings.fps = normalizeFps(timing.fps, settings.fps);
+      fpsSource = 'file';
+      fpsVaries = !timing.constant;
+    } else {
+      fpsSource = 'unreadable';
+      fpsVaries = false;
+    }
+    renderSettings();
   }
 
   on(el.pickBtn, 'click', () => {
@@ -748,18 +857,27 @@ export function createApp(deps: UiDeps): AppHandle {
   });
 
   on(el.rangeStartBtn, 'click', () => {
-    settings.rangeStart = clamp(video.currentTime, 0, Number.isFinite(video.duration) ? video.duration : 0);
+    const duration = Number.isFinite(video.duration) ? video.duration : 0;
+    settings.rangeStart = clamp(video.currentTime, 0, duration);
+    if (settings.mode === 'every-frame') {
+      // The end follows the start, so moving the start never leaves a range
+      // too long to capture or a stale end from an earlier position.
+      const end = settings.rangeStart + everyFrameLimit();
+      settings.rangeEnd = end >= duration ? 0 : end;
+    }
     renderSettings();
   });
 
   on(el.rangeEndBtn, 'click', () => {
     settings.rangeEnd = clamp(video.currentTime, 0, Number.isFinite(video.duration) ? video.duration : 0);
+    if (enforceEveryFrameLimit()) toastLimited();
     renderSettings();
   });
 
   on(el.rangeReset, 'click', () => {
     settings.rangeStart = 0;
     settings.rangeEnd = 0;
+    if (enforceEveryFrameLimit()) toastLimited();
     renderSettings();
   });
 
@@ -1102,6 +1220,9 @@ export function createApp(deps: UiDeps): AppHandle {
   });
 
   cleanups.push(store.subscribe(renderGallery));
+  // Room left in the gallery bounds a run, so the plan (and in every-frame
+  // mode, the longest range) has to follow it.
+  cleanups.push(store.subscribe(() => renderSettings()));
 
   /* ---------------------------------------------------------------- */
   /* Export                                                            */

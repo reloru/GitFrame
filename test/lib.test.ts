@@ -27,6 +27,7 @@ import {
   DEFAULT_FPS,
   MAX_FPS,
   clamp,
+  formatFps,
   formatShortDuration,
   formatTimecode,
   frameDuration,
@@ -39,6 +40,13 @@ import {
 } from '../src/lib/time.js';
 
 describe('time', () => {
+  it('shows frame rates the way they are usually written', () => {
+    expect(formatFps(24000 / 1001)).toBe('23.976');
+    expect(formatFps(30000 / 1001)).toBe('29.97');
+    expect(formatFps(60)).toBe('60');
+    expect(formatFps(0)).toBe(String(DEFAULT_FPS));
+  });
+
   it('clamps into range and treats NaN as the floor', () => {
     expect(clamp(5, 0, 10)).toBe(5);
     expect(clamp(-3, 0, 10)).toBe(0);
@@ -254,6 +262,14 @@ describe('plan', () => {
     expect(plan.times).toHaveLength(10);
   });
 
+  it('does not lose the last frame of a range exactly N frames long', () => {
+    // 300 frames at 29.97 fps: span / step lands a hair under 300 in floating point.
+    const fps = 30000 / 1001;
+    const plan = buildPlan({ mode: 'every-frame', duration: 60, start: 1, end: 1 + 300 / fps, fps });
+    expect(plan.times).toHaveLength(300);
+    expect(plan.truncated).toBe(false);
+  });
+
   it('honours in/out points', () => {
     const plan = buildPlan({
       mode: 'interval',
@@ -357,6 +373,11 @@ describe('settings', () => {
 
   it('keeps count mode when asked', () => {
     expect(normalizeSettings({ mode: 'count' }).mode).toBe('count');
+  });
+
+  it('keeps every-frame mode when asked', () => {
+    expect(normalizeSettings({ mode: 'every-frame' }).mode).toBe('every-frame');
+    expect(normalizeSettings({ mode: 'every-other' }).mode).toBe('interval');
   });
 
   it('defaults crop to null and passes an already-computed one through', () => {

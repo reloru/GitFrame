@@ -69,6 +69,11 @@ export function normalizeFps(value: unknown, fallback: number = DEFAULT_FPS): nu
   return clamp(parsed, MIN_FPS, MAX_FPS);
 }
 
+/** A frame rate for display: up to three decimals, no trailing zeros (23.976, 29.97, 60). */
+export function formatFps(fps: number): string {
+  return String(Number(normalizeFps(fps).toFixed(3)));
+}
+
 /** Seconds occupied by a single frame at `fps`. */
 export function frameDuration(fps: number): number {
   return 1 / normalizeFps(fps);
