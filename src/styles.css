@@ -629,6 +629,12 @@ main {
   flex: 0 0 auto;
 }
 
+/* Four buttons share this row; 48px keeps each at the minimum tap size and
+   leaves the value room for rates like 23.976 on a 375px-wide phone. */
+.stepper--fps .stepper__btn {
+  width: 48px;
+}
+
 .stepper__btn:active {
   background: var(--line);
 }

@@ -69,6 +69,52 @@ export function normalizeFps(value: unknown, fallback: number = DEFAULT_FPS): nu
   return clamp(parsed, MIN_FPS, MAX_FPS);
 }
 
+/**
+ * Frame rates video is commonly made at, lowest first. The fractional ones are
+ * the NTSC rates, exactly 24000/1001, 30000/1001 and 60000/1001.
+ */
+export const STANDARD_FPS: readonly number[] = [
+  24000 / 1001,
+  24,
+  25,
+  30000 / 1001,
+  30,
+  50,
+  60000 / 1001,
+  60,
+  120,
+  240,
+];
+
+/** Rates closer than this are the same rate (29.97 typed vs 30000/1001 read from a file). */
+const SAME_RATE = 0.005;
+
+/**
+ * The next standard rate above (`direction` > 0) or below `fps`. At either end
+ * of the list it stays where it is rather than wrapping round.
+ */
+export function stepStandardFps(fps: number, direction: number): number {
+  const current = normalizeFps(fps);
+  if (direction > 0) return STANDARD_FPS.find((rate) => rate > current + SAME_RATE) ?? current;
+  return [...STANDARD_FPS].reverse().find((rate) => rate < current - SAME_RATE) ?? current;
+}
+
+/**
+ * One whole frame per second up or down. From a fractional rate the first step
+ * lands on the whole number in that direction — 29.97 goes to 30 or 29 — and
+ * whole steps continue from there.
+ */
+export function stepWholeFps(fps: number, direction: number): number {
+  const current = normalizeFps(fps);
+  const whole = Math.abs(current - Math.round(current)) < 1e-6;
+  const next = whole
+    ? Math.round(current) + Math.sign(direction)
+    : direction > 0
+      ? Math.ceil(current)
+      : Math.floor(current);
+  return clamp(next, MIN_FPS, MAX_FPS);
+}
+
 /** A frame rate for display: up to three decimals, no trailing zeros (23.976, 29.97, 60). */
 export function formatFps(fps: number): string {
   return String(Number(normalizeFps(fps).toFixed(3)));

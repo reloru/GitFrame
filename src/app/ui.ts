@@ -29,8 +29,6 @@ import {
 import { bySharpness } from '../lib/sharpness.js';
 import { FrameStore, type Frame } from '../lib/store.js';
 import {
-  MAX_FPS,
-  MIN_FPS,
   clamp,
   formatFps,
   formatShortDuration,
@@ -38,6 +36,8 @@ import {
   frameDuration,
   normalizeFps,
   stepByFrames,
+  stepStandardFps,
+  stepWholeFps,
 } from '../lib/time.js';
 import { buildZip, type ZipEntry } from '../lib/zip.js';
 import {
@@ -177,6 +177,8 @@ export function createApp(deps: UiDeps): AppHandle {
     fpsInput: must<HTMLInputElement>(doc, 'fps-input'),
     fpsMinus: must<HTMLButtonElement>(doc, 'fps-minus'),
     fpsPlus: must<HTMLButtonElement>(doc, 'fps-plus'),
+    fpsPrevStd: must<HTMLButtonElement>(doc, 'fps-prev-std'),
+    fpsNextStd: must<HTMLButtonElement>(doc, 'fps-next-std'),
     fpsHint: must<HTMLElement>(doc, 'fps-hint'),
     changeVideo: must<HTMLButtonElement>(doc, 'change-video'),
     gallerySection: must<HTMLElement>(doc, 'gallery-section'),
@@ -501,22 +503,25 @@ export function createApp(deps: UiDeps): AppHandle {
     (value, direction) => value + direction * (value >= 20 ? 10 : 1),
   );
 
-  wireStepper(
-    el.fpsInput,
-    el.fpsMinus,
-    el.fpsPlus,
-    () => settings.fps,
-    (value) => {
-      const next = normalizeFps(value, settings.fps);
-      if (next !== settings.fps) {
-        settings.fps = next;
-        fpsSource = 'user';
-        fpsVaries = false;
-      }
-    },
-    // Whole steps from a file's fractional rate: 29.97 steps to 29 or 31.
-    (value, direction) => clamp(Math.round(value) + direction, MIN_FPS, MAX_FPS),
-  );
+  function writeFps(value: number): void {
+    const next = normalizeFps(value, settings.fps);
+    if (next !== settings.fps) {
+      settings.fps = next;
+      fpsSource = 'user';
+      fpsVaries = false;
+    }
+  }
+
+  wireStepper(el.fpsInput, el.fpsMinus, el.fpsPlus, () => settings.fps, writeFps, stepWholeFps);
+
+  on(el.fpsPrevStd, 'click', () => {
+    writeFps(stepStandardFps(settings.fps, -1));
+    renderSettings();
+  });
+  on(el.fpsNextStd, 'click', () => {
+    writeFps(stepStandardFps(settings.fps, 1));
+    renderSettings();
+  });
 
   on(el.quality, 'input', () => {
     settings.quality = clamp(Number(el.quality.value) / 100, 0.3, 1);

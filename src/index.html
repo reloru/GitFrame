@@ -237,10 +237,12 @@
               <label class="field__label" for="fps-input">
                 Frame rate <span class="field__hint" id="fps-hint">used by the frame-step buttons</span>
               </label>
-              <div class="stepper">
+              <div class="stepper stepper--fps">
+                <button type="button" class="stepper__btn" id="fps-prev-std" aria-label="Previous standard frame rate">«</button>
                 <button type="button" class="stepper__btn" id="fps-minus" aria-label="Lower frame rate">−</button>
                 <input type="text" inputmode="decimal" id="fps-input" class="stepper__input" value="30" />
                 <button type="button" class="stepper__btn" id="fps-plus" aria-label="Raise frame rate">+</button>
+                <button type="button" class="stepper__btn" id="fps-next-std" aria-label="Next standard frame rate">»</button>
               </div>
             </div>
 

@@ -453,12 +453,37 @@ describe('frame rate from the file', () => {
     expect(h.app.settings.fps).toBe(24);
   });
 
-  it('marks a typed rate as the user\'s, and steps whole numbers from a fractional one', async () => {
+  it('marks a stepped rate as the user\'s; the first step from a fractional rate lands on the whole number', async () => {
     const h = setup({ duration: 10, readFrameTiming: timing(30000 / 1001) });
     await h.loadVideo();
     await tick();
     h.click('fps-plus');
+    expect(h.app.settings.fps).toBe(30);
+    expect(h.el('fps-hint').textContent).toBe('set by you');
+    h.click('fps-plus');
     expect(h.app.settings.fps).toBe(31);
+  });
+
+  it('steps down from a fractional rate to the whole number below', async () => {
+    const h = setup({ duration: 10, readFrameTiming: timing(60000 / 1001) });
+    await h.loadVideo();
+    await tick();
+    h.click('fps-minus');
+    expect(h.app.settings.fps).toBe(59);
+  });
+
+  it('jumps between standard rates with the outer buttons', async () => {
+    const h = setup({ duration: 10, readFrameTiming: timing(30000 / 1001) });
+    await h.loadVideo();
+    await tick();
+    h.click('fps-next-std');
+    expect(h.el<HTMLInputElement>('fps-input').value).toBe('30');
+    h.click('fps-next-std');
+    expect(h.el<HTMLInputElement>('fps-input').value).toBe('50');
+    h.click('fps-prev-std');
+    h.click('fps-prev-std');
+    h.click('fps-prev-std');
+    expect(h.el<HTMLInputElement>('fps-input').value).toBe('25');
     expect(h.el('fps-hint').textContent).toBe('set by you');
   });
 });
