@@ -1,6 +1,12 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+// These tests drive the real capture, crop-detection and sharpness code over
+// full-size frames under jsdom. A CI runner sharing its cores with the other
+// test files runs them several times slower than a workstation (1.1 s locally
+// became 5.07 s on CI for the crop test), so the 5 s default is too tight.
+vi.setConfig({ testTimeout: 20_000 });
+
 import type { TimerLike } from '../src/app/extractor.js';
 import { createApp, type AppHandle, type ShareCandidate, type ShareOutcome, type UiDeps } from '../src/app/ui.js';
 import { FakeCanvas } from './helpers/fakes.js';
