@@ -112,7 +112,7 @@ canvas {
 
 main {
   padding: var(--pad);
-  padding-bottom: calc(var(--pad) + 96px + var(--safe-b));
+  padding-bottom: calc(var(--pad) + var(--safe-b));
   display: flex;
   flex-direction: column;
   gap: 18px;
@@ -800,29 +800,6 @@ main {
 }
 
 /* ------------------------------------------------------------------ */
-/* Sticky dock                                                         */
-/* ------------------------------------------------------------------ */
-
-.dock {
-  position: fixed;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  padding: 12px var(--pad) calc(12px + var(--safe-b));
-  background: linear-gradient(180deg, rgba(11, 15, 20, 0) 0%, var(--bg) 34%);
-  z-index: 6;
-  padding-left: calc(var(--pad) + var(--safe-l));
-  padding-right: calc(var(--pad) + var(--safe-r));
-}
-
-.btn--dock {
-  width: 100%;
-  min-height: var(--jumbo);
-  font-size: 17px;
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
-}
-
-/* ------------------------------------------------------------------ */
 /* Progress overlay                                                    */
 /* ------------------------------------------------------------------ */
 
@@ -883,14 +860,20 @@ main {
 /* ------------------------------------------------------------------ */
 
 .toast {
+  /* Placed by the controller: inside the video's frame while it is on screen
+     (.toast--on-video), otherwise near the bottom of the viewport. Taps go
+     straight through to whatever is underneath, so a message never blocks a
+     control. */
   position: fixed;
   left: 50%;
+  top: auto;
+  bottom: calc(24px + var(--safe-b));
   transform: translateX(-50%);
-  bottom: calc(88px + var(--safe-b));
+  pointer-events: none;
   background: var(--surface-2);
   border: 1px solid var(--line);
   color: var(--text);
-  padding: 12px 18px;
+  padding: 10px 16px;
   border-radius: 999px;
   font-size: 15px;
   z-index: 30;
@@ -899,13 +882,18 @@ main {
   box-shadow: 0 6px 24px rgba(0, 0, 0, 0.5);
 }
 
+.toast--on-video {
+  position: absolute;
+  bottom: 12px;
+  max-width: calc(100% - 24px);
+}
+
 /* ------------------------------------------------------------------ */
 /* Larger screens: keep it centred rather than stretched               */
 /* ------------------------------------------------------------------ */
 
 @media (min-width: 720px) {
-  main,
-  .dock {
+  main {
     max-width: 680px;
     margin-inline: auto;
   }

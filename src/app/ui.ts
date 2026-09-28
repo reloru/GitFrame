@@ -190,7 +190,6 @@ export function createApp(deps: UiDeps): AppHandle {
     sortSharp: must<HTMLButtonElement>(doc, 'sort-sharp'),
     deleteSelected: must<HTMLButtonElement>(doc, 'delete-selected'),
     clearAll: must<HTMLButtonElement>(doc, 'clear-all'),
-    dock: must<HTMLElement>(doc, 'dock'),
     downloadZip: must<HTMLButtonElement>(doc, 'download-zip'),
     downloadLabel: must<HTMLElement>(doc, 'download-label'),
     overlay: must<HTMLElement>(doc, 'progress-overlay'),
@@ -241,8 +240,29 @@ export function createApp(deps: UiDeps): AppHandle {
   /* Feedback                                                          */
   /* ---------------------------------------------------------------- */
 
+  /**
+   * Put a message over the bottom edge of the video while the video is on
+   * screen, where the eye already is after a tap. It is attached to the video's
+   * frame, so it scrolls with it rather than floating over whatever scrolls
+   * underneath. Scrolled down to the gallery, the video is out of sight, so the
+   * message goes to the bottom of the viewport instead. Either way it lets taps
+   * through (see .toast in styles.css).
+   */
+  function placeToast(): void {
+    const view = doc.defaultView;
+    const stage = el.video.parentElement;
+    const rect = !el.workspace.hidden && stage ? stage.getBoundingClientRect() : null;
+    const height = view?.innerHeight ?? 0;
+    const onScreen = rect !== null && rect.height > 0 && rect.bottom > 0 && rect.top < height;
+    el.toast.dataset.anchor = onScreen ? 'video' : 'screen';
+    el.toast.classList.toggle('toast--on-video', onScreen);
+    const host = onScreen && stage ? stage : doc.body;
+    if (el.toast.parentElement !== host) host.appendChild(el.toast);
+  }
+
   function toast(message: string, durationMs: number = TOAST_MS): void {
     el.toast.textContent = message;
+    placeToast();
     el.toast.hidden = false;
     timers.clearTimeout(toastTimer);
     toastTimer = timers.setTimeout(() => {
@@ -1127,7 +1147,6 @@ export function createApp(deps: UiDeps): AppHandle {
 
   function renderGallery(frames: readonly Frame[]): void {
     el.gallerySection.hidden = frames.length === 0;
-    el.dock.hidden = frames.length === 0;
     el.galleryCount.textContent = String(frames.length);
 
     const selected = store.selectedCount;
