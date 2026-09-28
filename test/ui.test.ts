@@ -135,7 +135,6 @@ describe('initial state', () => {
     expect(h.el('empty-state').hidden).toBe(false);
     expect(h.el('workspace').hidden).toBe(true);
     expect(h.el('gallery-section').hidden).toBe(true);
-    expect(h.el('dock').hidden).toBe(true);
     expect(h.el('progress-overlay').hidden).toBe(true);
   });
 
@@ -396,6 +395,61 @@ describe('settings', () => {
     expect(h.el('plan-summary').textContent).toContain('10 frames');
     h.click('interval-plus');
     expect(h.el('plan-summary').textContent).toContain('5 frames');
+  });
+});
+
+describe('layout', () => {
+  it('orders the workspace video, playback, grab, output settings, batch extraction', () => {
+    setup();
+    const ids = [...document.querySelectorAll('#workspace > *')].map((n) => n.id || n.className);
+    const at = (id: string) => ids.indexOf(id);
+    expect(at('grab-btn')).toBeLessThan(at('settings-panel'));
+    expect(at('settings-panel')).toBeLessThan(at('auto-panel'));
+    expect((document.getElementById('settings-panel') as HTMLDetailsElement).open).toBe(true);
+    expect((document.getElementById('auto-panel') as HTMLDetailsElement).open).toBe(false);
+  });
+
+  it('keeps Download with the gallery instead of pinned over the controls', () => {
+    setup();
+    const download = document.getElementById('download-zip')!;
+    const gallery = document.getElementById('gallery-section')!;
+    expect(gallery.contains(download)).toBe(true);
+    // After the delete/clear row, at the end of the gallery.
+    const actions = gallery.querySelector('.gallery-actions')!;
+    expect(actions.compareDocumentPosition(download) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(document.getElementById('dock')).toBeNull();
+  });
+});
+
+describe('messages', () => {
+  function stageAt(top: number, bottom: number): void {
+    const stage = document.getElementById('video')!.parentElement!;
+    stage.getBoundingClientRect = () =>
+      ({ top, bottom, height: bottom - top, left: 0, right: 390, width: 390, x: 0, y: top }) as DOMRect;
+  }
+
+  it('sits over the bottom edge of the video while the video is on screen', async () => {
+    const h = setup({ duration: 10 });
+    await h.loadVideo();
+    stageAt(80, 400);
+    h.click('grab-btn');
+    await h.app.whenIdle();
+    const toast = h.el('toast');
+    expect(toast.dataset.anchor).toBe('video');
+    // Attached to the video's frame, so it scrolls with the video.
+    expect(toast.parentElement).toBe(h.el('video').parentElement);
+    expect(toast.classList.contains('toast--on-video')).toBe(true);
+  });
+
+  it('falls back to the bottom of the screen when the video is scrolled away', async () => {
+    const h = setup({ duration: 10 });
+    await h.loadVideo();
+    stageAt(-900, -500);
+    h.click('grab-btn');
+    await h.app.whenIdle();
+    expect(h.el('toast').dataset.anchor).toBe('screen');
+    expect(h.el('toast').parentElement).toBe(document.body);
+    expect(h.el('toast').classList.contains('toast--on-video')).toBe(false);
   });
 });
 
@@ -873,7 +927,6 @@ describe('grabbing a single frame', () => {
 
     expect(h.app.store.count).toBe(1);
     expect(h.el('gallery-section').hidden).toBe(false);
-    expect(h.el('dock').hidden).toBe(false);
     expect(h.el('gallery-count').textContent).toBe('1');
     expect(h.el('gallery').querySelectorAll('.tile')).toHaveLength(1);
     expect(h.el('toast').textContent).toBe('Grabbed 0:01.000');
@@ -1265,7 +1318,6 @@ describe('gallery', () => {
 
     expect(h.app.store.count).toBe(0);
     expect(h.el('gallery-section').hidden).toBe(true);
-    expect(h.el('dock').hidden).toBe(true);
   });
 
   it('labels each tile with its timecode', async () => {
