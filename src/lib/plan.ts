@@ -69,7 +69,9 @@ export function buildPlan(input: PlanInput): Plan {
     step = count === 1 ? span : span / count;
   } else if (input.mode === 'every-frame') {
     step = frameDuration(fps);
-    requested = Math.max(1, Math.floor(span / step));
+    // The tolerance keeps a span of exactly N frames from flooring to N - 1
+    // through floating-point error, which would silently drop the last frame.
+    requested = Math.max(1, Math.floor(span / step + 1e-6));
   } else {
     const interval = input.intervalSeconds ?? 0;
     if (!Number.isFinite(interval) || interval <= 0) return EMPTY;

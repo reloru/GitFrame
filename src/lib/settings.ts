@@ -12,7 +12,7 @@ import { DEFAULT_FORMAT_ID, DEFAULT_QUALITY, MAX_QUALITY, MIN_QUALITY } from './
 import { DEFAULT_MAX_EDGE } from './scale.js';
 import { DEFAULT_FPS, clamp, normalizeFps } from './time.js';
 
-export type ExtractMode = 'interval' | 'count';
+export type ExtractMode = 'interval' | 'count' | 'every-frame';
 
 export interface Settings {
   formatId: string;
@@ -63,7 +63,7 @@ export function normalizeSettings(input: unknown): Settings {
     quality: clamp(toNumber(raw.quality, DEFAULT_QUALITY), MIN_QUALITY, MAX_QUALITY),
     maxEdge: Math.max(0, Math.floor(toNumber(raw.maxEdge, DEFAULT_MAX_EDGE))),
     fps: normalizeFps(toNumber(raw.fps, DEFAULT_FPS)),
-    mode: raw.mode === 'count' ? 'count' : 'interval',
+    mode: raw.mode === 'count' || raw.mode === 'every-frame' ? raw.mode : 'interval',
     intervalSeconds: clamp(
       toNumber(raw.intervalSeconds, DEFAULT_SETTINGS.intervalSeconds),
       MIN_INTERVAL_SECONDS,
