@@ -71,7 +71,11 @@
             disablepictureinpicture
             disableremoteplayback
           ></video>
-          <div class="stage__badge" id="video-meta" aria-live="polite"></div>
+        </div>
+
+        <!-- Status line under the video: clip info, replaced by messages while one shows. -->
+        <div class="status" id="status-line">
+          <span class="status__meta" id="video-meta"></span>
         </div>
 
         <!-- Scrubber -->

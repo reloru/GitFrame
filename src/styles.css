@@ -286,16 +286,23 @@ main {
   background: #000;
 }
 
-.stage__badge {
-  position: absolute;
-  left: 8px;
-  bottom: 8px;
-  background: rgba(0, 0, 0, 0.66);
-  backdrop-filter: blur(6px);
-  color: #fff;
+/* One line under the video. The clip info sits in it; a message (.toast--inline)
+   shares the same grid cell and, while shown, covers the info, so nothing else
+   moves or is hidden. */
+.status {
+  display: grid;
+  margin-top: -10px;
+}
+
+.status > * {
+  grid-area: 1 / 1;
+}
+
+.status__meta {
+  align-self: center;
+  color: var(--muted);
   font-size: 12px;
-  padding: 5px 9px;
-  border-radius: 8px;
+  padding: 3px 2px;
   font-variant-numeric: tabular-nums;
 }
 
@@ -860,8 +867,8 @@ main {
 /* ------------------------------------------------------------------ */
 
 .toast {
-  /* Placed by the controller: inside the video's frame while it is on screen
-     (.toast--on-video), otherwise near the bottom of the viewport. Taps go
+  /* Placed by the controller: in the status line under the video while it is on
+     screen (.toast--inline), otherwise near the bottom of the viewport. Taps go
      straight through to whatever is underneath, so a message never blocks a
      control. */
   position: fixed;
@@ -882,10 +889,15 @@ main {
   box-shadow: 0 6px 24px rgba(0, 0, 0, 0.5);
 }
 
-.toast--on-video {
-  position: absolute;
-  bottom: 12px;
-  max-width: calc(100% - 24px);
+.toast--inline {
+  position: static;
+  transform: none;
+  max-width: none;
+  padding: 3px 10px;
+  border-radius: 8px;
+  font-size: 12px;
+  box-shadow: none;
+  background: var(--surface-2);
 }
 
 /* ------------------------------------------------------------------ */
