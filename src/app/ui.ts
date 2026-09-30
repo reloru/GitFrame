@@ -135,6 +135,7 @@ export function createApp(deps: UiDeps): AppHandle {
     workspace: must<HTMLElement>(doc, 'workspace'),
     video: must<HTMLVideoElement>(doc, 'video'),
     videoMeta: must<HTMLElement>(doc, 'video-meta'),
+    statusLine: must<HTMLElement>(doc, 'status-line'),
     scrub: must<HTMLInputElement>(doc, 'scrub'),
     timeCurrent: must<HTMLElement>(doc, 'time-current'),
     timeTotal: must<HTMLElement>(doc, 'time-total'),
@@ -241,12 +242,12 @@ export function createApp(deps: UiDeps): AppHandle {
   /* ---------------------------------------------------------------- */
 
   /**
-   * Put a message over the bottom edge of the video while the video is on
-   * screen, where the eye already is after a tap. It is attached to the video's
-   * frame, so it scrolls with it rather than floating over whatever scrolls
-   * underneath. Scrolled down to the gallery, the video is out of sight, so the
-   * message goes to the bottom of the viewport instead. Either way it lets taps
-   * through (see .toast in styles.css).
+   * Put a message in the status line just under the video while the video is on
+   * screen, where the eye already is after a tap. It takes the place of the clip
+   * info for as long as it shows, so it covers nothing and moves nothing. The
+   * line scrolls with the video. Scrolled down to the gallery, the video is out
+   * of sight, so the message goes to the bottom of the viewport instead. Either
+   * way it lets taps through (see .toast in styles.css).
    */
   function placeToast(): void {
     const view = doc.defaultView;
@@ -255,8 +256,8 @@ export function createApp(deps: UiDeps): AppHandle {
     const height = view?.innerHeight ?? 0;
     const onScreen = rect !== null && rect.height > 0 && rect.bottom > 0 && rect.top < height;
     el.toast.dataset.anchor = onScreen ? 'video' : 'screen';
-    el.toast.classList.toggle('toast--on-video', onScreen);
-    const host = onScreen && stage ? stage : doc.body;
+    el.toast.classList.toggle('toast--inline', onScreen);
+    const host = onScreen ? el.statusLine : doc.body;
     if (el.toast.parentElement !== host) host.appendChild(el.toast);
   }
 
@@ -850,14 +851,7 @@ export function createApp(deps: UiDeps): AppHandle {
       const duplicate = store.findDuplicate(candidate);
       if (duplicate) {
         armDuplicate(candidate);
-        const at = formatTimecode(duplicate.frame.time);
-        toast(
-          duplicate.kind === 'exact'
-            ? `Already grabbed ${at} — tap Grab again to keep a second copy`
-            : `Already grabbed ${at} at ${duplicate.frame.width}×${duplicate.frame.height} ` +
-                `${duplicate.frame.ext.toUpperCase()} — tap Grab again for this one`,
-          DUPLICATE_CONFIRM_MS,
-        );
+        toast('Already grabbed — click again to grab', DUPLICATE_CONFIRM_MS);
         return;
       }
     }

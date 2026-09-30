@@ -428,7 +428,7 @@ describe('messages', () => {
       ({ top, bottom, height: bottom - top, left: 0, right: 390, width: 390, x: 0, y: top }) as DOMRect;
   }
 
-  it('sits over the bottom edge of the video while the video is on screen', async () => {
+  it('sits in the status line under the video while the video is on screen', async () => {
     const h = setup({ duration: 10 });
     await h.loadVideo();
     stageAt(80, 400);
@@ -436,9 +436,12 @@ describe('messages', () => {
     await h.app.whenIdle();
     const toast = h.el('toast');
     expect(toast.dataset.anchor).toBe('video');
-    // Attached to the video's frame, so it scrolls with the video.
-    expect(toast.parentElement).toBe(h.el('video').parentElement);
-    expect(toast.classList.contains('toast--on-video')).toBe(true);
+    // In the line below the video, not over it, so it scrolls with the video
+    // and covers nothing.
+    expect(toast.parentElement).toBe(h.el('status-line'));
+    expect(h.el('video').parentElement!.contains(toast)).toBe(false);
+    expect(h.el('video').parentElement!.contains(h.el('video-meta'))).toBe(false);
+    expect(toast.classList.contains('toast--inline')).toBe(true);
   });
 
   it('falls back to the bottom of the screen when the video is scrolled away', async () => {
@@ -449,7 +452,7 @@ describe('messages', () => {
     await h.app.whenIdle();
     expect(h.el('toast').dataset.anchor).toBe('screen');
     expect(h.el('toast').parentElement).toBe(document.body);
-    expect(h.el('toast').classList.contains('toast--on-video')).toBe(false);
+    expect(h.el('toast').classList.contains('toast--inline')).toBe(false);
   });
 });
 
@@ -986,9 +989,7 @@ describe('grabbing a duplicate frame', () => {
     await h.app.whenIdle();
 
     expect(h.app.store.count).toBe(1);
-    expect(h.el('toast').textContent).toBe(
-      'Already grabbed 0:01.000 — tap Grab again to keep a second copy',
-    );
+    expect(h.el('toast').textContent).toBe('Already grabbed — click again to grab');
   });
 
   it('keeps the copy when the warning is confirmed with a second tap', async () => {
@@ -1010,7 +1011,7 @@ describe('grabbing a duplicate frame', () => {
     await h.app.whenIdle();
 
     expect(h.app.store.count).toBe(1);
-    expect(h.el('toast').textContent).toMatch(/^Already grabbed 0:01\.000/);
+    expect(h.el('toast').textContent).toBe('Already grabbed — click again to grab');
 
     // The offer is still standing for a tap the user actually meant.
     timers.advance(DELIBERATE_PAUSE_MS);
@@ -1028,7 +1029,7 @@ describe('grabbing a duplicate frame', () => {
     await h.app.whenIdle();
 
     expect(h.app.store.count).toBe(1);
-    expect(h.el('toast').textContent).toMatch(/^Already grabbed 0:01\.000/);
+    expect(h.el('toast').textContent).toBe('Already grabbed — click again to grab');
   });
 
   it('shows the warning for as long as the confirm window stays open', async () => {
@@ -1059,10 +1060,10 @@ describe('grabbing a duplicate frame', () => {
     await h.app.whenIdle();
 
     expect(h.app.store.count).toBe(2);
-    expect(h.el('toast').textContent).toMatch(/^Already grabbed 0:01\.000/);
+    expect(h.el('toast').textContent).toBe('Already grabbed — click again to grab');
   });
 
-  it('names the existing output when only the settings differ', async () => {
+  it('warns the same way when only the settings differ', async () => {
     const sizes = h.el('size-group').querySelectorAll('button');
     (sizes[sizes.length - 1] as HTMLButtonElement).click(); // 720
 
@@ -1070,9 +1071,7 @@ describe('grabbing a duplicate frame', () => {
     await h.app.whenIdle();
 
     expect(h.app.store.count).toBe(1);
-    expect(h.el('toast').textContent).toBe(
-      'Already grabbed 0:01.000 at 1920×1080 JPG — tap Grab again for this one',
-    );
+    expect(h.el('toast').textContent).toBe('Already grabbed — click again to grab');
 
     timers.advance(DELIBERATE_PAUSE_MS);
     h.click('grab-btn');
