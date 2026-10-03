@@ -249,6 +249,40 @@ describe('transport controls', () => {
     expect(video.currentTime).toBeCloseTo(0, 5);
   });
 
+  it('swaps the outer buttons to 6-frame steps and back', () => {
+    const video = h.el<HTMLVideoElement>('video');
+    expect(h.el('fwd-skip-label').textContent).toBe('+1s');
+    h.click('skip-frames');
+    expect(h.el('back-skip-label').textContent).toBe('−6f');
+    expect(h.el('fwd-skip-label').textContent).toBe('+6f');
+    expect(h.el('skip-frames').getAttribute('aria-checked')).toBe('true');
+    expect(h.el('skip-seconds').getAttribute('aria-checked')).toBe('false');
+    h.click('fwd-second');
+    expect(video.currentTime).toBeCloseTo(6 / 30, 5);
+    h.click('back-second');
+    expect(video.currentTime).toBeCloseTo(0, 5);
+    h.click('skip-seconds');
+    expect(h.el('fwd-skip-label').textContent).toBe('+1s');
+    h.click('fwd-second');
+    expect(h.el<HTMLInputElement>('scrub').value).toBe('1');
+  });
+
+  it('follows the frame rate when stepping 6 frames', () => {
+    const video = h.el<HTMLVideoElement>('video');
+    h.click('skip-frames');
+    const fps = h.el<HTMLInputElement>('fps-input');
+    fps.value = '60';
+    fps.dispatchEvent(new Event('change'));
+    h.click('fwd-second');
+    expect(video.currentTime).toBeCloseTo(6 / 60, 5);
+  });
+
+  it('returns the outer buttons to 1 second when another video is loaded', async () => {
+    h.click('skip-frames');
+    await h.loadVideo();
+    expect(h.el('fwd-skip-label').textContent).toBe('+1s');
+  });
+
   it('updates the read-out while scrubbing and stops fighting timeupdate', () => {
     const scrub = h.el<HTMLInputElement>('scrub');
     scrub.value = '4.5';

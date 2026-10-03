@@ -442,6 +442,15 @@ main {
   gap: 8px;
 }
 
+.field-box {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap);
+  padding: var(--pad);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
 .field__label {
   font-size: 15px;
   font-weight: 600;

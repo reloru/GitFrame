@@ -63,6 +63,8 @@ const FPS_HINTS = {
   unreadable: 'not stored in this file; set it to match the video',
   user: 'set by you',
 } as const;
+/** Frames moved by the outer transport buttons in frame-skip mode. */
+const SKIP_FRAMES = 6;
 /** How long a toast stays up. */
 const TOAST_MS = 2600;
 /**
@@ -145,6 +147,10 @@ export function createApp(deps: UiDeps): AppHandle {
     playIcon: must<HTMLElement>(doc, 'play-icon'),
     fwdFrame: must<HTMLButtonElement>(doc, 'fwd-frame'),
     fwdSecond: must<HTMLButtonElement>(doc, 'fwd-second'),
+    backSkipLabel: must<HTMLElement>(doc, 'back-skip-label'),
+    fwdSkipLabel: must<HTMLElement>(doc, 'fwd-skip-label'),
+    skipSeconds: must<HTMLButtonElement>(doc, 'skip-seconds'),
+    skipFrames: must<HTMLButtonElement>(doc, 'skip-frames'),
     grabBtn: must<HTMLButtonElement>(doc, 'grab-btn'),
     rangeStartBtn: must<HTMLButtonElement>(doc, 'range-start-btn'),
     rangeEndBtn: must<HTMLButtonElement>(doc, 'range-end-btn'),
@@ -222,6 +228,8 @@ export function createApp(deps: UiDeps): AppHandle {
    */
   let fpsSource: 'default' | 'file' | 'unreadable' | 'user' = 'default';
   let fpsVaries = false;
+  /** What the outer transport buttons move by; per session, reset with each video. */
+  let skipUnit: 'seconds' | 'frames' = 'seconds';
 
   const timers: TimerLike = deps.timers ?? {
     setTimeout: (handler, ms) => setTimeout(handler, ms),
@@ -344,6 +352,7 @@ export function createApp(deps: UiDeps): AppHandle {
     el.qualityValue.textContent = `${Math.round(settings.quality * 100)}%`;
     el.fpsInput.value = formatFps(settings.fps);
     el.fpsHint.textContent = FPS_HINTS[fpsSource];
+    renderSkipUnit();
     el.intervalInput.value = String(settings.intervalSeconds);
     el.countInput.value = String(settings.frameCount);
 
@@ -365,6 +374,23 @@ export function createApp(deps: UiDeps): AppHandle {
     renderRange();
     renderCrop();
     renderPlanSummary();
+  }
+
+  function renderSkipUnit(): void {
+    const frames = skipUnit === 'frames';
+    const unit = frames ? `${SKIP_FRAMES}f` : '1s';
+    el.backSkipLabel.textContent = `−${unit}`;
+    el.fwdSkipLabel.textContent = `+${unit}`;
+    const spoken = frames ? `${SKIP_FRAMES} frames` : 'one second';
+    el.backSecond.setAttribute('aria-label', `Back ${spoken}`);
+    el.fwdSecond.setAttribute('aria-label', `Forward ${spoken}`);
+    for (const [button, active] of [
+      [el.skipSeconds, !frames],
+      [el.skipFrames, frames],
+    ] as const) {
+      button.classList.toggle('is-active', active);
+      button.setAttribute('aria-checked', active ? 'true' : 'false');
+    }
   }
 
   /** Most frames one run may produce: the plan cap, or what's left of the gallery if less. */
@@ -588,6 +614,7 @@ export function createApp(deps: UiDeps): AppHandle {
     sourceUrl = deps.createObjectURL(file);
     baseName = sanitizeBaseName(file.name);
     videoKey = videoKeyFor(file);
+    skipUnit = 'seconds';
     // Whatever was armed belonged to the old timeline.
     disarmDuplicate();
     // A trim range and a detected crop are both properties of the clip they
@@ -697,8 +724,23 @@ export function createApp(deps: UiDeps): AppHandle {
     setTime(Number(el.scrub.value));
   });
 
-  on(el.backSecond, 'click', () => setTime(video.currentTime - 1));
-  on(el.fwdSecond, 'click', () => setTime(video.currentTime + 1));
+  function skip(direction: -1 | 1): void {
+    setTime(
+      skipUnit === 'frames'
+        ? stepByFrames(video.currentTime, direction * SKIP_FRAMES, settings.fps, video.duration)
+        : video.currentTime + direction,
+    );
+  }
+  on(el.backSecond, 'click', () => skip(-1));
+  on(el.fwdSecond, 'click', () => skip(1));
+  on(el.skipSeconds, 'click', () => {
+    skipUnit = 'seconds';
+    renderSkipUnit();
+  });
+  on(el.skipFrames, 'click', () => {
+    skipUnit = 'frames';
+    renderSkipUnit();
+  });
   on(el.backFrame, 'click', () =>
     setTime(stepByFrames(video.currentTime, -1, settings.fps, video.duration)),
   );
