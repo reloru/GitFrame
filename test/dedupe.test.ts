@@ -12,7 +12,7 @@ import {
 import { createSettings } from '../src/lib/settings.js';
 import { MAX_FPS } from '../src/lib/time.js';
 
-const SIG = 'jpeg:1.00:1920:none';
+const SIG = 'jpeg:1.00:0:none';
 
 function grab(time: number, overrides: Partial<GrabIdentity> = {}): GrabIdentity {
   return { videoKey: 'clip', time, signature: SIG, ...overrides };

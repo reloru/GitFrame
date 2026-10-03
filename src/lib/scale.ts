@@ -13,7 +13,7 @@ export const SIZE_PRESETS = [
   { value: 720, label: '720' },
 ] as const;
 
-export const DEFAULT_MAX_EDGE = 1920;
+export const DEFAULT_MAX_EDGE = 0;
 
 /**
  * Scale `source` down so its longest edge is at most `maxEdge`, preserving
