@@ -29,7 +29,7 @@ export function formatById(id: string | null | undefined): ImageFormat {
 
 export const MIN_QUALITY = 0.3;
 export const MAX_QUALITY = 1;
-export const DEFAULT_QUALITY = 0.92;
+export const DEFAULT_QUALITY = 1;
 
 /** Clamp a quality value, or return undefined when the format ignores it. */
 export function qualityFor(format: ImageFormat, quality: number): number | undefined {
