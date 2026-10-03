@@ -219,6 +219,12 @@ describe('createCanvasRenderer', () => {
     expect(size).toEqual({ width: 1280, height: 720 });
   });
 
+  it('resamples at high quality', async () => {
+    const canvas = new FakeCanvas();
+    await makeRenderer(canvas, 1280).render(new FakeVideo({ videoWidth: 3840, videoHeight: 2160 }));
+    expect(canvas.context.imageSmoothingQuality).toBe('high');
+  });
+
   it('omits quality for lossless formats', async () => {
     const canvas = new FakeCanvas();
     const renderer = createCanvasRenderer({

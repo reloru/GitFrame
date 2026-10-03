@@ -84,6 +84,7 @@ function grayImage(width: number, height: number): RGBAImage {
 
 export class FakeContext implements Canvas2dLike {
   imageSmoothingEnabled = false;
+  imageSmoothingQuality: 'low' | 'medium' | 'high' = 'low';
   readonly draws: DrawCall[] = [];
   readonly clears: Array<{ w: number; h: number }> = [];
   /** Override to control what getImageData() returns for detection tests. */

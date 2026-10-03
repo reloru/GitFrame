@@ -201,6 +201,7 @@ export async function seekTo(
 
 export interface Canvas2dLike {
   imageSmoothingEnabled: boolean;
+  imageSmoothingQuality?: 'low' | 'medium' | 'high';
   drawImage(source: never, dx: number, dy: number, dw: number, dh: number): void;
   /** Draws only the [sx,sy,sw,sh] source rectangle — how a crop gets applied. */
   drawImage(
@@ -298,6 +299,7 @@ export function createCanvasRenderer(options: RendererOptions): FrameRenderer {
       if (!ctx) throw new Error('Canvas 2D context unavailable');
 
       ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = 'high';
       ctx.clearRect(0, 0, size.width, size.height);
       if (crop) {
         ctx.drawImage(video as never, crop.x, crop.y, crop.width, crop.height, 0, 0, size.width, size.height);

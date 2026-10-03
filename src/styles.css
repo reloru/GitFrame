@@ -281,7 +281,7 @@ main {
 .stage__video {
   width: 100%;
   /* Cap so a portrait clip can't push the controls off-screen. */
-  max-height: 46dvh;
+  max-height: 52dvh;
   object-fit: contain;
   background: #000;
 }
@@ -920,7 +920,7 @@ main {
   }
 
   .stage__video {
-    max-height: 52dvh;
+    max-height: 58dvh;
   }
 }
 
