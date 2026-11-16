@@ -3,6 +3,8 @@
 import type { Canvas2dLike, CanvasLike, TimerLike, VideoLike } from '../../src/app/extractor.js';
 import type { RGBAImage } from '../../src/lib/detect.js';
 
+type FrameCallback = (now: number, metadata?: { readonly mediaTime?: number }) => void;
+
 export interface FakeVideoOptions {
   duration?: number;
   readyState?: number;
@@ -37,14 +39,14 @@ export class FakeVideo extends EventTarget implements VideoLike {
     this.stall = options.stall ?? false;
     this.failSeek = options.failSeek ?? false;
     if (options.withFrameCallback) {
-      this.requestVideoFrameCallback = (callback: () => void): number => {
-        setTimeout(callback, 0);
+      this.requestVideoFrameCallback = (callback: FrameCallback): number => {
+        setTimeout(() => callback(0), 0);
         return 1;
       };
     }
   }
 
-  requestVideoFrameCallback?: (callback: () => void) => number;
+  requestVideoFrameCallback?: (callback: FrameCallback) => number;
 
   get currentTime(): number {
     return this.time;
@@ -137,6 +139,8 @@ export class FakeCanvas implements CanvasLike {
   readonly context = new FakeContext();
   lastType: string | undefined;
   lastQuality: number | undefined;
+  /** Every encode asked for, in order. */
+  readonly blobCalls: Array<{ type: string | undefined; quality: number | undefined }> = [];
   /** Sizes the canvas was resized to, in order. */
   readonly sizes: Array<{ width: number; height: number }> = [];
 
@@ -150,6 +154,7 @@ export class FakeCanvas implements CanvasLike {
   }
 
   toBlob(callback: (blob: Blob | null) => void, type?: string, quality?: number): void {
+    this.blobCalls.push({ type, quality });
     this.lastType = type;
     this.lastQuality = quality;
     if (this.options.nullBlob) {

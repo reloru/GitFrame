@@ -138,20 +138,39 @@ describe('time', () => {
     expect(timeForFrame(2, 10)).toBeCloseTo(0.25);
   });
 
-  it('steps whole frames without drifting past the ends', () => {
-    expect(stepByFrames(1, 1, 25, 10)).toBeCloseTo(1.04);
-    expect(stepByFrames(1, -1, 25, 10)).toBeCloseTo(0.96);
-    expect(stepByFrames(0, -5, 25, 10)).toBe(0);
-    expect(stepByFrames(9.99, 10, 25, 10)).toBeLessThanOrEqual(10);
-    expect(stepByFrames(Number.NaN, 1, 25, 10)).toBeCloseTo(0.04);
+  it('steps whole frames, landing on frame centres inside the clip', () => {
+    // 1 s at 25 fps is frame 25; its neighbours' centres are 26.5 and 24.5 frames in.
+    expect(stepByFrames(1, 1, 25, 10)).toBeCloseTo(1.06);
+    expect(stepByFrames(1, -1, 25, 10)).toBeCloseTo(0.98);
+    expect(stepByFrames(0, -5, 25, 10)).toBeCloseTo(0.02);
+    // The last of 250 frames is centred at 9.98.
+    expect(stepByFrames(9.99, 10, 25, 10)).toBeCloseTo(9.98);
+    expect(stepByFrames(Number.NaN, 1, 25, 10)).toBeCloseTo(0.06);
     // A zero-length clip has nowhere to step to.
     expect(stepByFrames(0, 1, 25, 0)).toBe(0);
+    expect(stepByFrames(0, 1, 25, Number.NaN)).toBe(0);
+    // A clip shorter than half a frame still can't be stepped past its end.
+    expect(stepByFrames(0, 1, 25, 0.01)).toBe(0.01);
   });
 
-  it('round-trips repeated steps without accumulating error', () => {
+  it('never lands on a frame boundary, at NTSC rates included', () => {
+    const fps = 30000 / 1001;
     let t = 0;
-    for (let i = 0; i < 10; i += 1) t = stepByFrames(t, 1, 30, 100);
-    expect(t).toBeCloseTo(10 / 30, 6);
+    for (let i = 1; i <= 300; i += 1) {
+      t = stepByFrames(t, 1, fps, 100);
+      // Exactly half a frame past the start of frame i.
+      expect(t * fps - i).toBeCloseTo(0.5, 6);
+    }
+    for (let i = 299; i >= 0; i -= 1) {
+      t = stepByFrames(t, -1, fps, 100);
+      expect(t * fps - i).toBeCloseTo(0.5, 6);
+    }
+  });
+
+  it('steps from wherever the scrubber left the playhead to the neighbouring frame', () => {
+    // 0.99 s at 30 fps is inside frame 29; forward is frame 30, back is 28.
+    expect(stepByFrames(0.99, 1, 30, 10)).toBeCloseTo(30.5 / 30, 6);
+    expect(stepByFrames(0.99, -1, 30, 10)).toBeCloseTo(28.5 / 30, 6);
   });
 });
 

@@ -57,6 +57,23 @@ export async function shareFiles(files: readonly ShareCandidate[]): Promise<Shar
   }
 }
 
+/**
+ * Hold a screen wake lock (iOS 16.4+). Returns the release function, or null
+ * where the API is missing or the request is refused — low-power mode refuses
+ * it, for one.
+ */
+export async function keepAwake(): Promise<(() => void) | null> {
+  if (!('wakeLock' in navigator)) return null;
+  try {
+    const sentinel = await navigator.wakeLock.request('screen');
+    return () => {
+      sentinel.release().catch(() => {});
+    };
+  } catch {
+    return null;
+  }
+}
+
 export function bootstrap(doc: Document): AppHandle {
   return createApp({
     document: doc,
@@ -64,6 +81,7 @@ export function bootstrap(doc: Document): AppHandle {
     revokeObjectURL: (url) => URL.revokeObjectURL(url),
     triggerDownload: (blob, filename) => downloadBlob(doc, blob, filename),
     shareFiles,
+    keepAwake,
   });
 }
 

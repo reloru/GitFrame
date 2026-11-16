@@ -43,13 +43,34 @@ The mobile requirements drove most of the design:
 
 ## Features
 
-- Frame-accurate stepping (±1 frame, ±1 second) at a configurable frame rate
-- Grab the current frame, or batch-extract every N seconds / N frames total
+- Frame-accurate stepping (±1 frame, ±1 second or ±6 frames) at the frame rate
+  read from the file. Steps land on the centre of a frame, never on the
+  boundary between two, so no frame is skipped or shown twice
+- Grab the current frame, or batch-extract every N seconds, N frames total, or
+  every frame in a range
 - Duplicate grabs are flagged before they land: a frame already in the gallery
   warns instead of capturing, and a second tap within the window keeps it anyway
 - PNG, JPG, or WebP output with a quality slider and longest-edge downscaling
-- Tap to select frames; download one as an image or many as a ZIP
+- One-tap removal of letterbox and pillarbox bars
+- A sharpness score on every frame, and a gallery order that puts the sharpest first
+- A full-screen viewer: tap the arrows in a tile's corner to see the frame at
+  full size, page or swipe through the gallery, pinch to zoom, select, save or
+  delete it, or send the video back to the moment it came from
+- Tap to select frames; save one as an image or many through the share sheet
+  (a ZIP where there is no share sheet)
 - Runs offline once loaded — there is nothing to talk to
+
+## Built for long runs on a phone
+
+- The gallery shows small thumbnails and keeps each tile in place between
+  updates; the full-size image is only decoded in the viewer.
+- Dragging the scrubber keeps one seek in flight and jumps to the latest
+  position when it lands, instead of queueing every position the thumb passed.
+- A batch run holds a screen wake lock where the browser offers one, and if the
+  page is sent to the background it waits there and carries on when it is back,
+  rather than writing each stalled frame off as skipped.
+- "Clear all" asks for a second tap when more than one frame is at stake —
+  frames exist nowhere but in the page.
 
 ## Development
 
@@ -80,14 +101,16 @@ controller's element ids ever drift apart.
 
 ## Deployment
 
-Deployed to Cloudflare Workers with static assets. To deploy from CI, add two
-repository secrets:
+Deployed to Cloudflare Workers with static assets, at
+<https://gitframe.reloru.workers.dev>. Every push to `main` runs
+`.github/workflows/deploy.yml`: lint, typecheck, tests, build, then
+`wrangler deploy`. It needs two repository secrets:
 
 - `CLOUDFLARE_API_TOKEN` — needs the **Workers Scripts: Edit** permission
 - `CLOUDFLARE_ACCOUNT_ID`
 
-Until those exist, the deploy workflow skips with a notice rather than failing.
-To deploy by hand:
+Without them the workflow skips the deploy step with a notice rather than
+failing. To deploy by hand:
 
 ```bash
 npm run deploy

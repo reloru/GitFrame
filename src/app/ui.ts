@@ -65,6 +65,12 @@ const FPS_HINTS = {
 } as const;
 /** Frames moved by the outer transport buttons in frame-skip mode. */
 const SKIP_FRAMES = 6;
+/** Longest edge of a gallery tile's thumbnail: a two-column tile at 3x is under 600px wide. */
+const THUMB_MAX_EDGE = 512;
+/** How long "Clear all" stays armed for its confirming second tap. */
+const CLEAR_CONFIRM_MS = 4000;
+/** A horizontal drag at least this long, in CSS px, turns the viewer's page. */
+const SWIPE_MIN_PX = 48;
 /** How long a toast stays up. */
 const TOAST_MS = 2600;
 /**
@@ -105,6 +111,12 @@ export interface UiDeps {
    * 'unsupported', export falls back to a direct/zip download.
    */
   readonly shareFiles?: (files: readonly ShareCandidate[]) => Promise<ShareOutcome>;
+  /**
+   * Keep the screen on for the length of a batch run; resolves to a release
+   * function, or null where the platform has no way to. A phone that
+   * auto-locks part-way through suspends the page and stalls the run.
+   */
+  readonly keepAwake?: () => Promise<(() => void) | null>;
   /** Reads the frame rate stored in the file; defaults to the MP4/MOV reader. */
   readonly readFrameTiming?: (file: BlobLike) => Promise<FrameTiming | null>;
 }
@@ -205,6 +217,18 @@ export function createApp(deps: UiDeps): AppHandle {
     progressDetail: must<HTMLElement>(doc, 'progress-detail'),
     cancelBtn: must<HTMLButtonElement>(doc, 'cancel-btn'),
     toast: must<HTMLElement>(doc, 'toast'),
+    viewer: must<HTMLElement>(doc, 'viewer'),
+    viewerTitle: must<HTMLElement>(doc, 'viewer-title'),
+    viewerClose: must<HTMLButtonElement>(doc, 'viewer-close'),
+    viewerStage: must<HTMLElement>(doc, 'viewer-stage'),
+    viewerImg: must<HTMLImageElement>(doc, 'viewer-img'),
+    viewerMeta: must<HTMLElement>(doc, 'viewer-meta'),
+    viewerPrev: must<HTMLButtonElement>(doc, 'viewer-prev'),
+    viewerNext: must<HTMLButtonElement>(doc, 'viewer-next'),
+    viewerSelect: must<HTMLButtonElement>(doc, 'viewer-select'),
+    viewerDelete: must<HTMLButtonElement>(doc, 'viewer-delete'),
+    viewerGoto: must<HTMLButtonElement>(doc, 'viewer-goto'),
+    viewerSave: must<HTMLButtonElement>(doc, 'viewer-save'),
   };
 
   const video = el.video as unknown as VideoLike & HTMLVideoElement;
@@ -262,7 +286,9 @@ export function createApp(deps: UiDeps): AppHandle {
     const stage = el.video.parentElement;
     const rect = !el.workspace.hidden && stage ? stage.getBoundingClientRect() : null;
     const height = view?.innerHeight ?? 0;
-    const onScreen = rect !== null && rect.height > 0 && rect.bottom > 0 && rect.top < height;
+    // The viewer covers the whole page, video included.
+    const onScreen =
+      el.viewer.hidden && rect !== null && rect.height > 0 && rect.bottom > 0 && rect.top < height;
     el.toast.dataset.anchor = onScreen ? 'video' : 'screen';
     el.toast.classList.toggle('toast--inline', onScreen);
     const host = onScreen ? el.statusLine : doc.body;
@@ -707,17 +733,42 @@ export function createApp(deps: UiDeps): AppHandle {
   /* Transport                                                         */
   /* ---------------------------------------------------------------- */
 
+  /** Where a drag of the scrubber has got to while an earlier seek is still decoding. */
+  let queuedSeek: number | null = null;
+
   function setTime(next: number): void {
     const max = Number.isFinite(video.duration) ? video.duration : 0;
     const value = clamp(next, 0, max);
+    queuedSeek = null;
     video.currentTime = value;
     el.timeCurrent.textContent = formatTimecode(value);
     el.scrub.value = String(value);
   }
 
+  /**
+   * Seek for a drag in progress. A drag reports positions far faster than a
+   * phone can decode them, and every seek issued on top of an unfinished one
+   * makes the picture lag further behind the thumb. So at most one seek is in
+   * flight; positions reported meanwhile replace each other, and the latest is
+   * taken up the moment the decoder is free.
+   */
+  function scrubTo(next: number): void {
+    if (!video.seeking) {
+      setTime(next);
+      return;
+    }
+    const max = Number.isFinite(video.duration) ? video.duration : 0;
+    queuedSeek = clamp(next, 0, max);
+    el.timeCurrent.textContent = formatTimecode(queuedSeek);
+  }
+
+  on(video, 'seeked', () => {
+    if (queuedSeek !== null) setTime(queuedSeek);
+  });
+
   on(el.scrub, 'input', () => {
     scrubbing = true;
-    setTime(Number(el.scrub.value));
+    scrubTo(Number(el.scrub.value));
   });
   on(el.scrub, 'change', () => {
     scrubbing = false;
@@ -793,11 +844,12 @@ export function createApp(deps: UiDeps): AppHandle {
   /* Capture                                                           */
   /* ---------------------------------------------------------------- */
 
-  function makeRenderer(maxEdge: number) {
+  function makeRenderer(maxEdge: number, thumbEdge = 0) {
     return createCanvasRenderer({
       format: formatById(settings.formatId),
       quality: settings.quality,
       maxEdge,
+      thumbEdge,
       ...(deps.createCanvas ? { createCanvas: deps.createCanvas } : {}),
       ...(settings.crop ? { crop: settings.crop } : {}),
     });
@@ -810,12 +862,13 @@ export function createApp(deps: UiDeps): AppHandle {
     height: number,
     signature: string,
     sharpness: number | null,
+    thumb: Blob | null,
   ): Frame {
     return {
       id: store.nextId(),
       time,
       blob,
-      url: deps.createObjectURL(blob),
+      url: deps.createObjectURL(thumb ?? blob),
       width,
       height,
       ext: formatById(settings.formatId).ext,
@@ -833,6 +886,42 @@ export function createApp(deps: UiDeps): AppHandle {
       time: frame.time,
       ext: frame.ext,
       total,
+    });
+  }
+
+  /** A run seeks the video itself; playback underneath would fight it for the playhead. */
+  function pausePlayback(): void {
+    try {
+      if (!video.paused) video.pause();
+    } catch {
+      // Nothing was playing.
+    }
+  }
+
+  async function acquireWake(): Promise<(() => void) | null> {
+    try {
+      return (await deps.keepAwake?.()) ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  function isHidden(): boolean {
+    return doc.visibilityState === 'hidden';
+  }
+
+  /** Resolves when the page is in the foreground again, or `signal` aborts. */
+  function waitUntilVisible(signal: AbortSignal): Promise<void> {
+    return new Promise<void>((resolve) => {
+      const check = (): void => {
+        if (isHidden() && !signal.aborted) return;
+        doc.removeEventListener('visibilitychange', check);
+        signal.removeEventListener('abort', check);
+        resolve();
+      };
+      doc.addEventListener('visibilitychange', check);
+      signal.addEventListener('abort', check);
+      check();
     });
   }
 
@@ -900,10 +989,10 @@ export function createApp(deps: UiDeps): AppHandle {
 
     el.grabBtn.disabled = true;
     try {
-      const renderer = makeRenderer(settings.maxEdge);
-      const { blob, size, sharpness } = await renderer.render(video);
+      const renderer = makeRenderer(settings.maxEdge, THUMB_MAX_EDGE);
+      const { blob, size, sharpness, thumb } = await renderer.render(video);
       const added = store.add(
-        toFrame(candidate.time, blob, size.width, size.height, candidate.signature, sharpness),
+        toFrame(candidate.time, blob, size.width, size.height, candidate.signature, sharpness, thumb),
       );
       toast(added ? `Grabbed ${formatTimecode(candidate.time)}` : 'Frame limit reached');
     } catch (error) {
@@ -969,22 +1058,33 @@ export function createApp(deps: UiDeps): AppHandle {
     }
 
     disarmDuplicate();
+    pausePlayback();
     const resumeAt = video.currentTime;
-    abort = new AbortController();
+    const run = new AbortController();
+    abort = run;
     openOverlay('Extracting frames…');
     setProgress(0, times.length);
     el.autoBtn.disabled = true;
+    let releaseWake = await acquireWake();
 
     try {
-      const renderer = makeRenderer(settings.maxEdge);
+      const renderer = makeRenderer(settings.maxEdge, THUMB_MAX_EDGE);
       const pending: Frame[] = [];
       const result = await extractFrames({
         video,
         times,
         renderer,
-        signal: abort.signal,
+        signal: run.signal,
         timers,
         ...(deps.yieldToUi ? { yieldToUi: deps.yieldToUi } : {}),
+        isSuspended: isHidden,
+        gate: async () => {
+          if (!isHidden()) return;
+          await waitUntilVisible(run.signal);
+          // The platform drops a wake lock when the page is hidden.
+          releaseWake?.();
+          releaseWake = await acquireWake();
+        },
         onFrame: (captured) => {
           pending.push(
             toFrame(
@@ -994,6 +1094,7 @@ export function createApp(deps: UiDeps): AppHandle {
               captured.size.height,
               signature,
               captured.sharpness,
+              captured.thumb,
             ),
           );
         },
@@ -1019,6 +1120,7 @@ export function createApp(deps: UiDeps): AppHandle {
     } catch (error) {
       toast(error instanceof Error ? error.message : 'Extraction failed');
     } finally {
+      releaseWake?.();
       abort = null;
       closeOverlay();
       el.autoBtn.disabled = false;
@@ -1104,6 +1206,7 @@ export function createApp(deps: UiDeps): AppHandle {
       return;
     }
 
+    pausePlayback();
     const resumeAt = video.currentTime;
     abort = new AbortController();
     openOverlay('Checking for black bars…');
@@ -1181,6 +1284,92 @@ export function createApp(deps: UiDeps): AppHandle {
     el.sortSharp.setAttribute('aria-checked', sortBySharpness ? 'true' : 'false');
   }
 
+  /** Frames in the order the gallery shows them. */
+  function displayOrder(): readonly Frame[] {
+    return sortBySharpness ? bySharpness(store.all) : store.all;
+  }
+
+  interface TileParts {
+    readonly item: HTMLLIElement;
+    readonly tile: HTMLButtonElement;
+    readonly check: HTMLElement;
+  }
+
+  /** Tiles by frame id, kept across renders — see renderGallery. */
+  const tiles = new Map<string, TileParts>();
+
+  function buildViewIcon(): SVGElement {
+    const ns = 'http://www.w3.org/2000/svg';
+    const svg = doc.createElementNS(ns, 'svg');
+    svg.setAttribute('class', 'tile__view-icon');
+    svg.setAttribute('viewBox', '0 0 16 16');
+    svg.setAttribute('fill', 'none');
+    svg.setAttribute('stroke', 'currentColor');
+    svg.setAttribute('stroke-width', '2');
+    svg.setAttribute('stroke-linecap', 'round');
+    svg.setAttribute('stroke-linejoin', 'round');
+    svg.setAttribute('aria-hidden', 'true');
+    const path = doc.createElementNS(ns, 'path');
+    path.setAttribute('d', 'M9.5 2H14v4.5M14 2L9 7M6.5 14H2V9.5M2 14l5-5');
+    svg.appendChild(path);
+    return svg;
+  }
+
+  function buildTile(frame: Frame): TileParts {
+    const item = doc.createElement('li');
+    item.className = 'gallery__item';
+
+    const tile = doc.createElement('button');
+    tile.type = 'button';
+    tile.className = 'tile';
+    tile.dataset.id = frame.id;
+    tile.setAttribute(
+      'aria-label',
+      frame.sharpness === null
+        ? `Frame at ${formatTimecode(frame.time)}`
+        : `Frame at ${formatTimecode(frame.time)}, sharpness ${frame.sharpness} of 100`,
+    );
+
+    const img = doc.createElement('img');
+    img.className = 'tile__img';
+    img.src = frame.url;
+    img.alt = '';
+    img.loading = 'lazy';
+    img.decoding = 'async';
+
+    const time = doc.createElement('span');
+    time.className = 'tile__time';
+    time.textContent = formatTimecode(frame.time);
+
+    const check = doc.createElement('span');
+    check.className = 'tile__check';
+    check.setAttribute('aria-hidden', 'true');
+
+    tile.append(img, time, check);
+    if (frame.sharpness !== null) {
+      const sharp = doc.createElement('span');
+      sharp.className = 'tile__sharp';
+      sharp.textContent = String(frame.sharpness);
+      sharp.setAttribute('aria-hidden', 'true');
+      tile.appendChild(sharp);
+    }
+
+    const view = doc.createElement('button');
+    view.type = 'button';
+    view.className = 'tile__view';
+    view.dataset.view = frame.id;
+    view.setAttribute('aria-label', `View frame at ${formatTimecode(frame.time)}`);
+    view.appendChild(buildViewIcon());
+
+    item.append(tile, view);
+    return { item, tile, check };
+  }
+
+  /**
+   * Tiles are built once per frame and then only updated and re-ordered.
+   * Rebuilding the list on every change — every tap that selects a frame is
+   * one — would make the browser load and decode every visible image again.
+   */
   function renderGallery(frames: readonly Frame[]): void {
     el.gallerySection.hidden = frames.length === 0;
     el.galleryCount.textContent = String(frames.length);
@@ -1189,61 +1378,46 @@ export function createApp(deps: UiDeps): AppHandle {
     el.galleryHint.textContent =
       selected > 0
         ? `${selected} selected · ${formatBytes(store.totalBytes)} total`
-        : `Tap a frame to select it · ${formatBytes(store.totalBytes)} total`;
+        : `Tap a frame to select it, or its corner arrows to view it · ${formatBytes(store.totalBytes)} total`;
     el.deleteSelected.disabled = selected === 0;
     el.downloadLabel.textContent =
       selected > 0
         ? `Download ${selected} selected`
         : `Download all ${frames.length}`;
 
-    el.gallery.replaceChildren();
-    for (const frame of sortBySharpness ? bySharpness(frames) : frames) {
-      const item = doc.createElement('li');
-      const tile = doc.createElement('button');
-      tile.type = 'button';
-      tile.className = 'tile';
-      tile.dataset.id = frame.id;
-      const isSelected = store.isSelected(frame.id);
-      tile.classList.toggle('is-selected', isSelected);
-      tile.setAttribute('aria-pressed', isSelected ? 'true' : 'false');
-      tile.setAttribute(
-        'aria-label',
-        frame.sharpness === null
-          ? `Frame at ${formatTimecode(frame.time)}`
-          : `Frame at ${formatTimecode(frame.time)}, sharpness ${frame.sharpness} of 100`,
-      );
-
-      const img = doc.createElement('img');
-      img.className = 'tile__img';
-      img.src = frame.url;
-      img.alt = '';
-      img.loading = 'lazy';
-      img.decoding = 'async';
-
-      const time = doc.createElement('span');
-      time.className = 'tile__time';
-      time.textContent = formatTimecode(frame.time);
-
-      const check = doc.createElement('span');
-      check.className = 'tile__check';
-      check.textContent = isSelected ? '✓' : '';
-      check.setAttribute('aria-hidden', 'true');
-
-      tile.append(img, time, check);
-      if (frame.sharpness !== null) {
-        const sharp = doc.createElement('span');
-        sharp.className = 'tile__sharp';
-        sharp.textContent = String(frame.sharpness);
-        sharp.setAttribute('aria-hidden', 'true');
-        tile.appendChild(sharp);
+    const ordered = displayOrder();
+    const live = new Set<string>();
+    const items: HTMLLIElement[] = [];
+    for (const frame of ordered) {
+      live.add(frame.id);
+      let parts = tiles.get(frame.id);
+      if (!parts) {
+        parts = buildTile(frame);
+        tiles.set(frame.id, parts);
       }
-      item.appendChild(tile);
-      el.gallery.appendChild(item);
+      const isSelected = store.isSelected(frame.id);
+      parts.tile.classList.toggle('is-selected', isSelected);
+      parts.tile.setAttribute('aria-pressed', isSelected ? 'true' : 'false');
+      parts.check.textContent = isSelected ? '✓' : '';
+      items.push(parts.item);
     }
+    for (const id of [...tiles.keys()]) {
+      if (!live.has(id)) tiles.delete(id);
+    }
+
+    const current = el.gallery.children;
+    const unchanged =
+      current.length === items.length && items.every((item, index) => current[index] === item);
+    if (!unchanged) el.gallery.replaceChildren(...items);
   }
 
   on(el.gallery, 'click', (event) => {
     const target = event.target as HTMLElement | null;
+    const view = target?.closest?.('.tile__view') as HTMLElement | null;
+    if (view?.dataset?.view) {
+      openViewer(view.dataset.view);
+      return;
+    }
     const tile = target?.closest?.('.tile') as HTMLElement | null;
     const id = tile?.dataset?.id;
     if (id) store.toggleSelection(id);
@@ -1274,12 +1448,178 @@ export function createApp(deps: UiDeps): AppHandle {
     if (removed > 0) toast(`Deleted ${removed}`);
   });
 
+  /**
+   * "Clear all" sits a thumb's width from "Delete selected" and throws away
+   * frames that exist nowhere else, so with more than one frame at stake it
+   * takes a second tap. The offer lapses on its own and on any gallery change.
+   */
+  let clearArmed = false;
+  let clearTimer: unknown;
+
+  function disarmClear(): void {
+    clearArmed = false;
+    timers.clearTimeout(clearTimer);
+    el.clearAll.textContent = 'Clear all';
+  }
+
   on(el.clearAll, 'click', () => {
+    if (store.count > 1 && !clearArmed) {
+      clearArmed = true;
+      el.clearAll.textContent = `Tap again to clear ${store.count}`;
+      clearTimer = timers.setTimeout(disarmClear, CLEAR_CONFIRM_MS);
+      return;
+    }
+    disarmClear();
     store.clear();
     toast('Cleared');
   });
 
+  /* ---------------------------------------------------------------- */
+  /* Viewer                                                            */
+  /* ---------------------------------------------------------------- */
+
+  /** The frame the viewer is showing; null while it is closed. */
+  let viewerId: string | null = null;
+  /** Object URL of the full-size image on show. Tiles only ever hold thumbnails. */
+  let viewerUrl: string | null = null;
+
+  function releaseViewerImage(): void {
+    if (viewerUrl) {
+      deps.revokeObjectURL(viewerUrl);
+      viewerUrl = null;
+    }
+    el.viewerImg.removeAttribute('src');
+    delete el.viewerImg.dataset.id;
+  }
+
+  function viewerFrame(): { frame: Frame; index: number; frames: readonly Frame[] } | null {
+    if (viewerId === null) return null;
+    const frames = displayOrder();
+    const index = frames.findIndex((frame) => frame.id === viewerId);
+    const frame = frames[index];
+    return frame ? { frame, index, frames } : null;
+  }
+
+  function renderViewer(): void {
+    if (viewerId === null) return;
+    const shown = viewerFrame();
+    if (!shown) {
+      closeViewer();
+      return;
+    }
+    const { frame, index, frames } = shown;
+
+    if (el.viewerImg.dataset.id !== frame.id) {
+      releaseViewerImage();
+      viewerUrl = deps.createObjectURL(frame.blob);
+      el.viewerImg.src = viewerUrl;
+      el.viewerImg.dataset.id = frame.id;
+    }
+
+    el.viewerTitle.textContent = `${formatTimecode(frame.time)} · ${index + 1} of ${frames.length}`;
+    const sharpness = frame.sharpness === null ? '' : ` · sharpness ${frame.sharpness}`;
+    el.viewerMeta.textContent =
+      `${frame.width}×${frame.height} · ${frame.ext.toUpperCase()} · ${formatBytes(frame.blob.size)}${sharpness}`;
+    el.viewerPrev.disabled = index === 0;
+    el.viewerNext.disabled = index === frames.length - 1;
+    const isSelected = store.isSelected(frame.id);
+    el.viewerSelect.setAttribute('aria-pressed', isSelected ? 'true' : 'false');
+    el.viewerSelect.textContent = isSelected ? 'Selected ✓' : 'Select';
+    // A frame from an earlier video has no place on this one's timeline.
+    el.viewerGoto.disabled = videoKey === '' || frame.videoKey !== videoKey;
+  }
+
+  function openViewer(id: string): void {
+    viewerId = id;
+    el.viewer.hidden = false;
+    doc.body.classList.add('is-locked');
+    renderViewer();
+    if (viewerId !== null) el.viewerClose.focus();
+  }
+
+  function closeViewer(): void {
+    const id = viewerId;
+    viewerId = null;
+    el.viewer.hidden = true;
+    doc.body.classList.remove('is-locked');
+    releaseViewerImage();
+    const opener = id === null ? null : tiles.get(id)?.item.querySelector<HTMLElement>('.tile__view');
+    opener?.focus();
+  }
+
+  function stepViewer(direction: -1 | 1): void {
+    const shown = viewerFrame();
+    const next = shown?.frames[shown.index + direction];
+    if (!next) return;
+    viewerId = next.id;
+    renderViewer();
+  }
+
+  on(el.viewerClose, 'click', closeViewer);
+  on(el.viewerPrev, 'click', () => stepViewer(-1));
+  on(el.viewerNext, 'click', () => stepViewer(1));
+
+  on(el.viewerSelect, 'click', () => {
+    if (viewerId !== null) store.toggleSelection(viewerId);
+  });
+
+  on(el.viewerDelete, 'click', () => {
+    const shown = viewerFrame();
+    if (!shown) return;
+    const neighbour = shown.frames[shown.index + 1] ?? shown.frames[shown.index - 1];
+    if (neighbour) viewerId = neighbour.id;
+    else closeViewer();
+    store.remove(shown.frame.id);
+    toast(`Deleted ${formatTimecode(shown.frame.time)}`);
+  });
+
+  on(el.viewerGoto, 'click', () => {
+    const shown = viewerFrame();
+    if (!shown) return;
+    closeViewer();
+    pausePlayback();
+    setTime(shown.frame.time);
+    el.video.scrollIntoView?.({ block: 'center' });
+  });
+
+  on(el.viewerSave, 'click', () => {
+    const shown = viewerFrame();
+    if (shown) void track(() => exportFrames([shown.frame]));
+  });
+
+  on(doc, 'keydown', (event) => {
+    if (viewerId === null) return;
+    const key = (event as KeyboardEvent).key;
+    if (key === 'Escape') closeViewer();
+    else if (key === 'ArrowLeft') stepViewer(-1);
+    else if (key === 'ArrowRight') stepViewer(1);
+  });
+
+  /** Where a one-finger touch on the viewer's image began. */
+  let swipeFrom: { readonly x: number; readonly y: number } | null = null;
+
+  on(el.viewerStage, 'touchstart', (event) => {
+    const touches = (event as TouchEvent).touches;
+    const touch = touches.length === 1 ? touches[0] : undefined;
+    swipeFrom = touch ? { x: touch.clientX, y: touch.clientY } : null;
+  });
+
+  on(el.viewerStage, 'touchend', (event) => {
+    const from = swipeFrom;
+    swipeFrom = null;
+    const touch = (event as TouchEvent).changedTouches[0];
+    if (!from || !touch) return;
+    // Zoomed in, a drag is the user panning around the picture.
+    if ((doc.defaultView?.visualViewport?.scale ?? 1) > 1.01) return;
+    const dx = touch.clientX - from.x;
+    const dy = touch.clientY - from.y;
+    if (Math.abs(dx) < SWIPE_MIN_PX || Math.abs(dx) < Math.abs(dy) * 1.5) return;
+    stepViewer(dx < 0 ? 1 : -1);
+  });
+
   cleanups.push(store.subscribe(renderGallery));
+  cleanups.push(store.subscribe(renderViewer));
+  cleanups.push(store.subscribe(disarmClear));
   // Room left in the gallery bounds a run, so the plan (and in every-frame
   // mode, the longest range) has to follow it.
   cleanups.push(store.subscribe(() => renderSettings()));
@@ -1288,8 +1628,7 @@ export function createApp(deps: UiDeps): AppHandle {
   /* Export                                                            */
   /* ---------------------------------------------------------------- */
 
-  async function exportFrames(): Promise<void> {
-    const frames = store.exportSet;
+  async function exportFrames(frames: readonly Frame[] = store.exportSet): Promise<void> {
     if (frames.length === 0) {
       toast('No frames to download');
       return;
@@ -1361,7 +1700,7 @@ export function createApp(deps: UiDeps): AppHandle {
   }
 
   on(el.downloadZip, 'click', () => {
-    void track(exportFrames);
+    void track(() => exportFrames());
   });
 
   /* ---------------------------------------------------------------- */
@@ -1379,6 +1718,8 @@ export function createApp(deps: UiDeps): AppHandle {
       abort?.abort();
       disarmDuplicate();
       timers.clearTimeout(toastTimer);
+      timers.clearTimeout(clearTimer);
+      releaseViewerImage();
       releaseSource();
       releaseCropPreview();
       store.clear();
