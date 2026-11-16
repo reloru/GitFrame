@@ -9,6 +9,7 @@ import {
   sampleVoids,
   seekTo,
   waitForEvent,
+  PRESENT_TIMEOUT_MS,
   waitForPresentedFrame,
 } from '../src/app/extractor.js';
 import type { RGBAImage } from '../src/lib/detect.js';
@@ -192,6 +193,175 @@ describe('seekTo', () => {
     await expect(
       seekTo(video, 3, { timers: inertTimers, signal: controller.signal }),
     ).rejects.toBeInstanceOf(CancelledError);
+  });
+});
+
+describe('seekTo and the presented frame', () => {
+  type FrameCallback = (now: number, metadata?: { readonly mediaTime?: number }) => void;
+
+  /** A video whose frame callbacks the test fires by hand. */
+  function manualVideo(): { video: FakeVideo; callbacks: FrameCallback[]; cancelled: number[] } {
+    const video = new FakeVideo();
+    const callbacks: FrameCallback[] = [];
+    const cancelled: number[] = [];
+    video.requestVideoFrameCallback = (callback) => {
+      callbacks.push(callback);
+      return callbacks.length;
+    };
+    (video as FakeVideo & { cancelVideoFrameCallback(handle: number): void }).cancelVideoFrameCallback = (
+      handle,
+    ) => {
+      cancelled.push(handle);
+    };
+    return { video, callbacks, cancelled };
+  }
+
+  /** Only the presented-frame deadline ever fires; the seek's own deadline never does. */
+  const deadlineOnly = {
+    setTimeout: (handler: () => void, ms: number): unknown =>
+      ms === PRESENT_TIMEOUT_MS ? setTimeout(handler, 0) : 0,
+    clearTimeout: (handle: unknown): void => clearTimeout(handle as ReturnType<typeof setTimeout>),
+  };
+
+  it('starts listening before the seek, so a frame presented ahead of `seeked` counts', async () => {
+    const { video, callbacks } = manualVideo();
+    let listeningAtSeek = 0;
+    const original = Object.getOwnPropertyDescriptor(FakeVideo.prototype, 'currentTime')!;
+    Object.defineProperty(video, 'currentTime', {
+      get: () => original.get!.call(video),
+      set: (value: number) => {
+        listeningAtSeek = callbacks.length;
+        original.set!.call(video, value);
+        // The browser paints the frame, then dispatches `seeked`.
+        callbacks[0]!(0, { mediaTime: value });
+      },
+    });
+
+    // Inert timers: had the wait started after `seeked`, nothing would end it.
+    await seekTo(video, 2, { timers: inertTimers });
+    expect(listeningAtSeek).toBe(1);
+  });
+
+  it('waits past `seeked` for a frame that is presented afterwards', async () => {
+    const { video, callbacks } = manualVideo();
+    let done = false;
+    const seeking = seekTo(video, 2, { timers: inertTimers }).then(() => {
+      done = true;
+    });
+    await flush();
+    await flush();
+    expect(done).toBe(false);
+    callbacks[0]!(0, { mediaTime: 2 });
+    await seeking;
+    expect(done).toBe(true);
+  });
+
+  it('does not take a frame from an earlier seek for this one', async () => {
+    const { video, callbacks } = manualVideo();
+    let done = false;
+    const seeking = seekTo(video, 8, { timers: inertTimers }).then(() => {
+      done = true;
+    });
+    await flush();
+    callbacks[0]!(0, { mediaTime: 1 });
+    await flush();
+    expect(done).toBe(false);
+    // It listened again for the right one.
+    expect(callbacks).toHaveLength(2);
+    callbacks[1]!(0, { mediaTime: 7.99 });
+    await seeking;
+  });
+
+  it('gives up on a silent callback after the deadline and stops listening', async () => {
+    const { video, cancelled } = manualVideo();
+    await seekTo(video, 2, { timers: deadlineOnly });
+    expect(cancelled).toEqual([1]);
+  });
+
+  it('stops listening when the seek itself fails, and ignores a late frame', async () => {
+    const { video, callbacks, cancelled } = manualVideo();
+    video.failSeek = true;
+    await expect(seekTo(video, 2, { timers: inertTimers })).rejects.toThrow(/Video error/);
+    expect(cancelled).toEqual([1]);
+    expect(() => callbacks[0]!(0, { mediaTime: 2 })).not.toThrow();
+  });
+
+  it('copes with a browser that throws on cancel', async () => {
+    const { video } = manualVideo();
+    (video as FakeVideo & { cancelVideoFrameCallback(handle: number): void }).cancelVideoFrameCallback = () => {
+      throw new Error('nope');
+    };
+    await expect(seekTo(video, 2, { timers: deadlineOnly })).resolves.toBeUndefined();
+  });
+});
+
+describe('thumbnails', () => {
+  /** Output, sharpness and thumbnail canvases, in the order the renderer asks for them. */
+  function trio(thumbOptions: ConstructorParameters<typeof FakeCanvas>[0] = {}) {
+    const canvases = [new FakeCanvas(), new FakeCanvas(), new FakeCanvas(thumbOptions)];
+    let next = 0;
+    return { canvases, factory: (): FakeCanvas => canvases[next++]! };
+  }
+  const render = (factory: () => FakeCanvas, video = new FakeVideo(), maxEdge = 0) =>
+    createCanvasRenderer({
+      format: formatById('png'),
+      quality: 1,
+      maxEdge,
+      thumbEdge: 512,
+      createCanvas: factory,
+    }).render(video);
+
+  it('makes a small JPEG from the frame already drawn', async () => {
+    const { canvases, factory } = trio();
+    const { thumb, blob } = await render(factory);
+    expect(blob.type).toBe('image/png');
+    expect(thumb!.type).toBe('image/jpeg');
+    expect(canvases[2]!.width).toBe(512);
+    expect(canvases[2]!.height).toBe(288);
+    expect(canvases[2]!.context.draws).toEqual([{ dw: 512, dh: 288 }]);
+    expect(canvases[2]!.context.imageSmoothingQuality).toBe('high');
+  });
+
+  it('reuses one thumbnail canvas across frames', async () => {
+    const { factory } = trio();
+    const made = vi.fn(factory);
+    const renderer = createCanvasRenderer({
+      format: formatById('jpeg'),
+      quality: 1,
+      maxEdge: 0,
+      thumbEdge: 512,
+      createCanvas: made,
+    });
+    await renderer.render(new FakeVideo());
+    await renderer.render(new FakeVideo());
+    expect(made).toHaveBeenCalledTimes(3);
+  });
+
+  it('makes none unless asked', async () => {
+    const { thumb } = await makeRenderer().render(new FakeVideo());
+    expect(thumb).toBeNull();
+  });
+
+  it('makes none for an output that is already about thumbnail size', async () => {
+    const { factory } = trio();
+    const { thumb } = await render(factory, new FakeVideo(), 720);
+    expect(thumb).toBeNull();
+  });
+
+  it('keeps the frame when the thumbnail cannot be drawn or encoded', async () => {
+    for (const broken of [{ noContext: true }, { nullBlob: true }]) {
+      const { factory } = trio(broken);
+      const result = await render(factory);
+      expect(result.blob.size).toBeGreaterThan(0);
+      expect(result.thumb).toBeNull();
+    }
+    const { canvases, factory } = trio();
+    canvases[2]!.toBlob = () => {
+      throw new Error('encoder gone');
+    };
+    const result = await render(factory);
+    expect(result.blob.size).toBeGreaterThan(0);
+    expect(result.thumb).toBeNull();
   });
 });
 
@@ -400,6 +570,71 @@ describe('extractFrames', () => {
     expect(seen).toEqual([1, 2]);
   });
 
+  it('waits at the gate before each frame', async () => {
+    const order: string[] = [];
+    const video = new FakeVideo();
+    await extractFrames({
+      video,
+      times: [1, 2],
+      renderer: makeRenderer(),
+      timers: inertTimers,
+      yieldToUi: noYield,
+      gate: async () => {
+        order.push('gate');
+      },
+      onFrame: (frame) => order.push(`frame ${frame.time}`),
+    });
+    expect(order).toEqual(['gate', 'frame 1', 'gate', 'frame 2']);
+  });
+
+  it('tries a frame again, once, when it failed because the page was suspended', async () => {
+    const video = new FakeVideo();
+    let call = 0;
+    let suspended = false;
+    const renderer = {
+      render: async () => {
+        call += 1;
+        if (call === 2) {
+          suspended = true;
+          throw new Error('seek stalled in the background');
+        }
+        return { blob: new Blob(['x']), size: { width: 10, height: 10 }, sharpness: null, thumb: null };
+      },
+    };
+    const result = await extractFrames({
+      video,
+      times: [1, 2, 3],
+      renderer,
+      timers: inertTimers,
+      yieldToUi: noYield,
+      isSuspended: () => suspended,
+      gate: async () => {
+        suspended = false;
+      },
+    });
+    expect(result.frames.map((frame) => frame.time)).toEqual([1, 2, 3]);
+    expect(result.failures).toHaveLength(0);
+  });
+
+  it('skips a frame that fails a second time while suspended rather than looping on it', async () => {
+    const video = new FakeVideo();
+    const renderer = {
+      render: async () => {
+        throw new Error('still stalled');
+      },
+    };
+    const result = await extractFrames({
+      video,
+      times: [1, 2],
+      renderer,
+      timers: inertTimers,
+      yieldToUi: noYield,
+      isSuspended: () => true,
+    });
+    expect(result.frames).toHaveLength(0);
+    expect(result.failures.map((failure) => failure.time)).toEqual([1, 2]);
+  });
+
   it('records a failure and keeps going', async () => {
     const video = new FakeVideo();
     let call = 0;
@@ -407,7 +642,7 @@ describe('extractFrames', () => {
       render: async () => {
         call += 1;
         if (call === 2) throw new Error('decode blew up');
-        return { blob: new Blob(['x']), size: { width: 10, height: 10 }, sharpness: call * 10 };
+        return { blob: new Blob(['x']), size: { width: 10, height: 10 }, sharpness: call * 10, thumb: null };
       },
     };
 

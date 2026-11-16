@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // These tests drive the real capture, crop-detection and sharpness code over
 // full-size frames under jsdom. A CI runner sharing its cores with the other
@@ -64,6 +64,7 @@ function setup(
     shareFiles?: (files: readonly ShareCandidate[]) => Promise<ShareOutcome>;
     timers?: ManualTimers;
     readFrameTiming?: UiDeps['readFrameTiming'];
+    keepAwake?: UiDeps['keepAwake'];
   } = {},
 ): Harness {
   mountMarkup(document);
@@ -87,6 +88,7 @@ function setup(
     yieldToUi: () => Promise.resolve(),
     ...(options.timers ? { timers: options.timers } : {}),
     ...(options.readFrameTiming ? { readFrameTiming: options.readFrameTiming } : {}),
+    ...(options.keepAwake ? { keepAwake: options.keepAwake } : {}),
     ...(options.shareFiles
       ? {
           shareFiles: (files: readonly ShareCandidate[]) => {
@@ -244,9 +246,9 @@ describe('transport controls', () => {
   it('steps by single frames at the configured rate', () => {
     h.click('fwd-frame');
     const video = h.el<HTMLVideoElement>('video');
-    expect(video.currentTime).toBeCloseTo(1 / 30, 5);
+    expect(video.currentTime).toBeCloseTo(1.5 / 30, 5);
     h.click('back-frame');
-    expect(video.currentTime).toBeCloseTo(0, 5);
+    expect(video.currentTime).toBeCloseTo(0.5 / 30, 5);
   });
 
   it('swaps the outer buttons to 6-frame steps and back', () => {
@@ -258,13 +260,13 @@ describe('transport controls', () => {
     expect(h.el('skip-frames').getAttribute('aria-checked')).toBe('true');
     expect(h.el('skip-seconds').getAttribute('aria-checked')).toBe('false');
     h.click('fwd-second');
-    expect(video.currentTime).toBeCloseTo(6 / 30, 5);
+    expect(video.currentTime).toBeCloseTo(6.5 / 30, 5);
     h.click('back-second');
-    expect(video.currentTime).toBeCloseTo(0, 5);
+    expect(video.currentTime).toBeCloseTo(0.5 / 30, 5);
     h.click('skip-seconds');
     expect(h.el('fwd-skip-label').textContent).toBe('+1s');
     h.click('fwd-second');
-    expect(h.el<HTMLInputElement>('scrub').value).toBe('1');
+    expect(Number(h.el<HTMLInputElement>('scrub').value)).toBeCloseTo(1 + 0.5 / 30, 5);
   });
 
   it('follows the frame rate when stepping 6 frames', () => {
@@ -274,7 +276,7 @@ describe('transport controls', () => {
     fps.value = '60';
     fps.dispatchEvent(new Event('change'));
     h.click('fwd-second');
-    expect(video.currentTime).toBeCloseTo(6 / 60, 5);
+    expect(video.currentTime).toBeCloseTo(6.5 / 60, 5);
   });
 
   it('returns the outer buttons to 1 second when another video is loaded', async () => {
@@ -294,6 +296,45 @@ describe('transport controls', () => {
     scrub.dispatchEvent(new Event('change'));
     h.el<HTMLVideoElement>('video').dispatchEvent(new Event('timeupdate'));
     expect(h.el('time-current').textContent).toBe('0:04.500');
+  });
+
+  it('holds drag positions back while a seek is still decoding, then takes the latest', () => {
+    const video = h.el<HTMLVideoElement>('video');
+    const scrub = h.el<HTMLInputElement>('scrub');
+    let seeking = false;
+    Object.defineProperty(video, 'seeking', { configurable: true, get: () => seeking });
+
+    scrub.value = '2';
+    scrub.dispatchEvent(new Event('input'));
+    seeking = true;
+    for (const value of ['3', '4', '5']) {
+      scrub.value = value;
+      scrub.dispatchEvent(new Event('input'));
+    }
+    // One seek issued; the read-out still follows the thumb.
+    expect(h.media.seeks).toEqual([2]);
+    expect(h.el('time-current').textContent).toBe('0:05.000');
+
+    seeking = false;
+    video.dispatchEvent(new Event('seeked'));
+    expect(h.media.seeks).toEqual([2, 5]);
+
+    // Nothing is left queued to fire on a later, unrelated seek.
+    video.dispatchEvent(new Event('seeked'));
+    expect(h.media.seeks).toEqual([2, 5]);
+  });
+
+  it('seeks to where the thumb is released even mid-seek, dropping what was queued', () => {
+    const video = h.el<HTMLVideoElement>('video');
+    const scrub = h.el<HTMLInputElement>('scrub');
+    Object.defineProperty(video, 'seeking', { configurable: true, get: () => true });
+
+    scrub.value = '3';
+    scrub.dispatchEvent(new Event('input'));
+    scrub.value = '6';
+    scrub.dispatchEvent(new Event('change'));
+    video.dispatchEvent(new Event('seeked'));
+    expect(h.media.seeks).toEqual([6]);
   });
 
   it('clamps a seek beyond the end of the clip', () => {
@@ -508,7 +549,7 @@ describe('frame rate from the file', () => {
     await tick();
     h.click('fwd-frame');
     h.click('fwd-frame');
-    expect(h.el<HTMLVideoElement>('video').currentTime).toBeCloseTo(2 / 60, 6);
+    expect(h.el<HTMLVideoElement>('video').currentTime).toBeCloseTo(2.5 / 60, 6);
   });
 
   it('says so when the file stores no frame rate, and keeps the field for the user', async () => {
@@ -983,8 +1024,9 @@ describe('grabbing a single frame', () => {
     h.click('grab-btn');
     await h.app.whenIdle();
 
-    expect(h.canvas.lastType).toBe('image/jpeg');
-    expect(h.canvas.lastQuality).toBeCloseTo(0.5);
+    // The frame itself is the first encode; its thumbnail follows.
+    expect(h.canvas.blobCalls[0]!.type).toBe('image/jpeg');
+    expect(h.canvas.blobCalls[0]!.quality).toBeCloseTo(0.5);
   });
 
   it('reports an encoder failure without losing the app', async () => {
@@ -1201,7 +1243,8 @@ describe('batch extraction', () => {
     const original = h.canvas.toBlob.bind(h.canvas);
     h.canvas.toBlob = (cb, type, quality) => {
       calls += 1;
-      if (calls === 2) {
+      // Each frame encodes twice, image then thumbnail; the third is frame two's image.
+      if (calls === 3) {
         cb(null);
         return;
       }
@@ -1213,6 +1256,98 @@ describe('batch extraction', () => {
 
     expect(h.el('toast').textContent).toBe('Got 4, skipped 1');
     expect(h.app.store.count).toBe(4);
+  });
+
+  it('pauses playback before a run', async () => {
+    const h = setup({ duration: 10 });
+    await h.loadVideo();
+    h.click('play-toggle');
+    expect(h.media.playing()).toBe(true);
+    h.click('auto-btn');
+    await h.app.whenIdle();
+    expect(h.media.playing()).toBe(false);
+  });
+
+  it('keeps the screen awake for the length of a run and lets go afterwards', async () => {
+    let held = 0;
+    let released = 0;
+    const h = setup({
+      duration: 10,
+      keepAwake: () => {
+        held += 1;
+        return Promise.resolve(() => {
+          released += 1;
+        });
+      },
+    });
+    await h.loadVideo();
+    h.click('auto-btn');
+    await h.app.whenIdle();
+    expect(held).toBe(1);
+    expect(released).toBe(1);
+    expect(h.app.store.count).toBe(10);
+  });
+
+  it('runs without a wake lock when asking for one fails', async () => {
+    const h = setup({ duration: 10, keepAwake: () => Promise.reject(new Error('denied')) });
+    await h.loadVideo();
+    h.click('auto-btn');
+    await h.app.whenIdle();
+    expect(h.app.store.count).toBe(10);
+  });
+
+  describe('while the page is in the background', () => {
+    let visibility = 'visible';
+    const setVisibility = (state: string): void => {
+      visibility = state;
+      document.dispatchEvent(new Event('visibilitychange'));
+    };
+    beforeEach(() => {
+      visibility = 'visible';
+      Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => visibility });
+    });
+    afterEach(() => {
+      delete (document as unknown as Record<string, unknown>).visibilityState;
+    });
+
+    it('holds the run until the page is back, then takes the wake lock again', async () => {
+      let held = 0;
+      const h = setup({
+        duration: 10,
+        keepAwake: () => {
+          held += 1;
+          return Promise.resolve(() => {});
+        },
+      });
+      await h.loadVideo();
+      visibility = 'hidden';
+      h.click('auto-btn');
+      for (let i = 0; i < 5; i += 1) await tick();
+      expect(h.app.store.count).toBe(0);
+      expect(h.media.seeks.filter((t) => t > 0)).toHaveLength(0);
+
+      // A change that leaves the page hidden is not the signal to go on.
+      setVisibility('hidden');
+      await tick();
+      expect(h.media.seeks.filter((t) => t > 0)).toHaveLength(0);
+
+      setVisibility('visible');
+      await h.app.whenIdle();
+      expect(h.app.store.count).toBe(10);
+      expect(held).toBe(2);
+    });
+
+    it('can still be stopped while held', async () => {
+      const h = setup({ duration: 10 });
+      await h.loadVideo();
+      visibility = 'hidden';
+      h.click('auto-btn');
+      await tick();
+      h.click('cancel-btn');
+      await h.app.whenIdle();
+      expect(h.app.store.count).toBe(0);
+      expect(h.el('progress-overlay').hidden).toBe(true);
+    });
   });
 
   it('refuses to run an empty plan', async () => {
@@ -1345,18 +1480,346 @@ describe('gallery', () => {
     expect(h.el<HTMLButtonElement>('delete-selected').disabled).toBe(true);
   });
 
-  it('clears everything and hides the gallery again', async () => {
+  it('clears everything on a confirming second tap and hides the gallery again', async () => {
     const h = await withFrames(2);
     h.click('clear-all');
+    expect(h.app.store.count).toBe(2);
+    expect(h.el('clear-all').textContent).toBe('Tap again to clear 2');
 
+    h.click('clear-all');
     expect(h.app.store.count).toBe(0);
     expect(h.el('gallery-section').hidden).toBe(true);
+    expect(h.el('clear-all').textContent).toBe('Clear all');
+  });
+
+  it('clears a single frame without asking', async () => {
+    const h = await withFrames(1);
+    h.click('clear-all');
+    expect(h.app.store.count).toBe(0);
+  });
+
+  it('lets the offer to clear lapse', async () => {
+    const timers = new ManualTimers();
+    const h = setup({ duration: 10, timers });
+    await h.loadVideo();
+    for (const t of [1, 2]) {
+      h.el<HTMLVideoElement>('video').currentTime = t;
+      h.click('grab-btn');
+      await h.app.whenIdle();
+    }
+    h.click('clear-all');
+    timers.advance(4000);
+    expect(h.el('clear-all').textContent).toBe('Clear all');
+    h.click('clear-all');
+    expect(h.app.store.count).toBe(2);
+    expect(h.el('clear-all').textContent).toBe('Tap again to clear 2');
+  });
+
+  it('withdraws the offer to clear when the gallery changes', async () => {
+    const h = await withFrames(3);
+    h.click('clear-all');
+    h.el('gallery').querySelector<HTMLElement>('.tile')!.click();
+    expect(h.el('clear-all').textContent).toBe('Clear all');
+    h.click('clear-all');
+    expect(h.app.store.count).toBe(3);
+  });
+
+  it('keeps a tile and its image in place when another frame is selected', async () => {
+    const h = await withFrames(3);
+    const before = [...h.el('gallery').querySelectorAll('.tile__img')];
+    h.el('gallery').querySelectorAll<HTMLElement>('.tile')[1]!.click();
+    const after = [...h.el('gallery').querySelectorAll('.tile__img')];
+    expect(after).toHaveLength(3);
+    after.forEach((img, index) => expect(img).toBe(before[index]));
+    expect(h.el('gallery').querySelectorAll('.tile.is-selected')).toHaveLength(1);
+  });
+
+  it('re-orders existing tiles rather than rebuilding them', async () => {
+    const h = await withFrames(3);
+    const before = new Set(h.el('gallery').querySelectorAll('.tile__img'));
+    h.click('sort-sharp');
+    h.click('sort-time');
+    for (const img of h.el('gallery').querySelectorAll('.tile__img')) expect(before.has(img)).toBe(true);
+  });
+
+  it('shows a thumbnail in the tile, not the full-size image', async () => {
+    const h = await withFrames(1);
+    // Encodes: the 1920-wide frame, then its 512-wide thumbnail.
+    expect(h.canvas.blobCalls.map((call) => call.type)).toEqual(['image/jpeg', 'image/jpeg']);
+    expect(h.canvas.blobCalls[1]!.quality).toBeCloseTo(0.8);
+    expect(h.canvas.sizes.at(-1)).toEqual({ width: 512, height: 288 });
+    // One object URL per frame: the tile's. The full image gets one only in the viewer.
+    expect(h.el('gallery').querySelector<HTMLImageElement>('.tile__img')!.src).toBe('blob:2');
   });
 
   it('labels each tile with its timecode', async () => {
     const h = await withFrames(2);
     const times = [...h.el('gallery').querySelectorAll('.tile__time')].map((n) => n.textContent);
     expect(times).toEqual(['0:01.000', '0:02.000']);
+  });
+});
+
+describe('frame viewer', () => {
+  async function withFrames(
+    count: number,
+    options: Parameters<typeof setup>[0] = {},
+  ): Promise<Harness> {
+    const h = setup({ duration: 10, ...options });
+    await h.loadVideo();
+    for (let i = 0; i < count; i += 1) {
+      h.click('fwd-second');
+      h.click('grab-btn');
+      await h.app.whenIdle();
+    }
+    return h;
+  }
+
+  const open = (h: Harness, index: number): void => {
+    h.el('gallery').querySelectorAll<HTMLElement>('.tile__view')[index]!.click();
+  };
+
+  it('opens on the frame whose corner was tapped, without selecting it', async () => {
+    const h = await withFrames(3);
+    open(h, 1);
+
+    expect(h.el('viewer').hidden).toBe(false);
+    expect(h.app.store.selectedCount).toBe(0);
+    expect(h.el('viewer-title').textContent).toBe('0:02.000 · 2 of 3');
+    expect(h.el('viewer-meta').textContent).toBe('1920×1080 · JPG · 8 B');
+    expect(document.body.classList.contains('is-locked')).toBe(true);
+    expect(document.activeElement).toBe(h.el('viewer-close'));
+  });
+
+  it('opens from a tap on the icon inside the corner button', async () => {
+    const h = await withFrames(1);
+    h.el('gallery').querySelector<SVGElement>('.tile__view-icon')!.dispatchEvent(
+      new Event('click', { bubbles: true }),
+    );
+    expect(h.el('viewer').hidden).toBe(false);
+  });
+
+  it('shows the full-size image, and releases it when closed', async () => {
+    const h = await withFrames(2);
+    open(h, 0);
+    const src = h.el<HTMLImageElement>('viewer-img').src;
+    expect(src).not.toBe(h.el('gallery').querySelector<HTMLImageElement>('.tile__img')!.src);
+
+    h.click('viewer-close');
+    expect(h.el('viewer').hidden).toBe(true);
+    expect(h.revoked).toContain(src);
+    expect(h.el<HTMLImageElement>('viewer-img').hasAttribute('src')).toBe(false);
+    expect(document.body.classList.contains('is-locked')).toBe(false);
+    expect(document.activeElement).toBe(h.el('gallery').querySelector('.tile__view'));
+  });
+
+  it('pages through the gallery and stops at either end', async () => {
+    const h = await withFrames(3);
+    open(h, 0);
+    expect(h.el<HTMLButtonElement>('viewer-prev').disabled).toBe(true);
+    const first = h.el<HTMLImageElement>('viewer-img').src;
+
+    h.click('viewer-next');
+    expect(h.el('viewer-title').textContent).toBe('0:02.000 · 2 of 3');
+    expect(h.revoked).toContain(first);
+    h.click('viewer-next');
+    expect(h.el('viewer-title').textContent).toBe('0:03.000 · 3 of 3');
+    expect(h.el<HTMLButtonElement>('viewer-next').disabled).toBe(true);
+    h.click('viewer-prev');
+    expect(h.el('viewer-title').textContent).toBe('0:02.000 · 2 of 3');
+  });
+
+  it('follows the gallery order when sorted by sharpness', async () => {
+    const h = await withFrames(2);
+    h.click('sort-sharp');
+    const order = [...h.el('gallery').querySelectorAll('.tile__time')].map((n) => n.textContent);
+    open(h, 0);
+    expect(h.el('viewer-title').textContent).toBe(`${order[0]} · 1 of 2`);
+    h.click('viewer-next');
+    expect(h.el('viewer-title').textContent).toBe(`${order[1]} · 2 of 2`);
+  });
+
+  it('pages with the arrow keys and closes on Escape', async () => {
+    const h = await withFrames(2);
+    const key = (name: string): void => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: name }));
+    };
+    // Keys do nothing while the viewer is closed.
+    key('ArrowRight');
+    expect(h.el('viewer').hidden).toBe(true);
+
+    open(h, 0);
+    key('ArrowRight');
+    expect(h.el('viewer-title').textContent).toBe('0:02.000 · 2 of 2');
+    key('ArrowLeft');
+    expect(h.el('viewer-title').textContent).toBe('0:01.000 · 1 of 2');
+    key('a');
+    expect(h.el('viewer').hidden).toBe(false);
+    key('Escape');
+    expect(h.el('viewer').hidden).toBe(true);
+  });
+
+  describe('swiping', () => {
+    const touch = (type: string, points: Array<{ x: number; y: number }>): Event => {
+      const event = new Event(type, { bubbles: true });
+      const list = points.map((p) => ({ clientX: p.x, clientY: p.y }));
+      Object.defineProperty(event, 'touches', { value: type === 'touchend' ? [] : list });
+      Object.defineProperty(event, 'changedTouches', { value: list });
+      return event;
+    };
+    const swipe = (h: Harness, from: { x: number; y: number }, to: { x: number; y: number }): void => {
+      h.el('viewer-stage').dispatchEvent(touch('touchstart', [from]));
+      h.el('viewer-stage').dispatchEvent(touch('touchend', [to]));
+    };
+
+    it('turns the page on a horizontal swipe', async () => {
+      const h = await withFrames(3);
+      open(h, 0);
+      swipe(h, { x: 300, y: 200 }, { x: 100, y: 210 });
+      expect(h.el('viewer-title').textContent).toBe('0:02.000 · 2 of 3');
+      swipe(h, { x: 100, y: 200 }, { x: 300, y: 190 });
+      expect(h.el('viewer-title').textContent).toBe('0:01.000 · 1 of 3');
+    });
+
+    it('ignores short, vertical and multi-finger drags', async () => {
+      const h = await withFrames(3);
+      open(h, 0);
+      swipe(h, { x: 300, y: 200 }, { x: 280, y: 200 });
+      swipe(h, { x: 300, y: 200 }, { x: 200, y: 400 });
+      h.el('viewer-stage').dispatchEvent(
+        touch('touchstart', [
+          { x: 300, y: 200 },
+          { x: 320, y: 220 },
+        ]),
+      );
+      h.el('viewer-stage').dispatchEvent(touch('touchend', [{ x: 100, y: 200 }]));
+      // A lift with nothing reported is ignored too.
+      h.el('viewer-stage').dispatchEvent(touch('touchstart', [{ x: 300, y: 200 }]));
+      h.el('viewer-stage').dispatchEvent(touch('touchend', []));
+      expect(h.el('viewer-title').textContent).toBe('0:01.000 · 1 of 3');
+    });
+
+    it('leaves a drag alone while the page is pinch-zoomed', async () => {
+      const h = await withFrames(3);
+      open(h, 0);
+      Object.defineProperty(window, 'visualViewport', { configurable: true, value: { scale: 2.5 } });
+      swipe(h, { x: 300, y: 200 }, { x: 100, y: 200 });
+      delete (window as unknown as Record<string, unknown>).visualViewport;
+      expect(h.el('viewer-title').textContent).toBe('0:01.000 · 1 of 3');
+    });
+  });
+
+  it('selects and deselects the frame on show', async () => {
+    const h = await withFrames(2);
+    open(h, 1);
+    h.click('viewer-select');
+    expect(h.app.store.isSelected(h.app.store.all[1]!.id)).toBe(true);
+    expect(h.el('viewer-select').getAttribute('aria-pressed')).toBe('true');
+    expect(h.el('viewer-select').textContent).toBe('Selected ✓');
+    expect(h.el('gallery').querySelectorAll('.tile')[1]!.classList.contains('is-selected')).toBe(true);
+
+    h.click('viewer-select');
+    expect(h.app.store.selectedCount).toBe(0);
+    expect(h.el('viewer-select').textContent).toBe('Select');
+  });
+
+  it('deletes the frame on show and moves to its neighbour', async () => {
+    const h = await withFrames(3);
+    open(h, 1);
+    h.click('viewer-delete');
+    expect(h.app.store.count).toBe(2);
+    expect(h.el('viewer-title').textContent).toBe('0:03.000 · 2 of 2');
+
+    h.click('viewer-delete');
+    expect(h.el('viewer-title').textContent).toBe('0:01.000 · 1 of 1');
+
+    h.click('viewer-delete');
+    expect(h.app.store.count).toBe(0);
+    expect(h.el('viewer').hidden).toBe(true);
+    // With the viewer gone the message has somewhere visible to go.
+    expect(h.el('toast').textContent).toBe('Deleted 0:01.000');
+  });
+
+  it('closes when its frame is removed from underneath it', async () => {
+    const h = await withFrames(2);
+    open(h, 0);
+    h.app.store.clear();
+    expect(h.el('viewer').hidden).toBe(true);
+  });
+
+  it('puts messages at the bottom of the screen while open, not under the hidden video', async () => {
+    const h = await withFrames(2);
+    const stage = h.el('video').parentElement!;
+    stage.getBoundingClientRect = () => ({ top: 80, bottom: 320, height: 240 }) as DOMRect;
+    Object.defineProperty(window, 'innerHeight', { configurable: true, value: 800 });
+    open(h, 0);
+    h.click('viewer-delete');
+    expect(h.el('toast').dataset.anchor).toBe('screen');
+  });
+
+  it('returns the playhead to the moment a frame came from', async () => {
+    const h = await withFrames(3);
+    const video = h.el<HTMLVideoElement>('video');
+    const scrolled: unknown[] = [];
+    video.scrollIntoView = (arg?: unknown) => {
+      scrolled.push(arg);
+    };
+    h.click('play-toggle');
+    open(h, 0);
+    h.click('viewer-goto');
+
+    expect(h.el('viewer').hidden).toBe(true);
+    expect(video.currentTime).toBe(1);
+    expect(h.media.playing()).toBe(false);
+    expect(scrolled).toEqual([{ block: 'center' }]);
+  });
+
+  it('will not jump to a moment on a different video', async () => {
+    const h = await withFrames(1);
+    await h.loadVideo('Other.mp4');
+    open(h, 0);
+    expect(h.el<HTMLButtonElement>('viewer-goto').disabled).toBe(true);
+  });
+
+  it('saves just the frame on show, through the share sheet when there is one', async () => {
+    const h = await withFrames(3, { shareFiles: () => Promise.resolve('shared') });
+    h.el('gallery').querySelector<HTMLElement>('.tile')!.click();
+    open(h, 2);
+    h.click('viewer-save');
+    await h.app.whenIdle();
+
+    expect(h.shareCalls).toHaveLength(1);
+    expect(h.shareCalls[0]).toEqual([
+      { blob: h.app.store.all[2]!.blob, filename: 'My-Clip_001_00h00m03s000.jpg' },
+    ]);
+  });
+
+  it('saves the frame on show as a plain download otherwise', async () => {
+    const h = await withFrames(2);
+    open(h, 1);
+    h.click('viewer-save');
+    await h.app.whenIdle();
+    expect(h.downloads.map((d) => d.filename)).toEqual(['My-Clip_001_00h00m02s000.jpg']);
+  });
+
+  it('ignores its buttons once closed', async () => {
+    const h = await withFrames(2);
+    open(h, 0);
+    h.click('viewer-close');
+    for (const id of ['viewer-select', 'viewer-delete', 'viewer-goto', 'viewer-save', 'viewer-next']) {
+      h.click(id);
+    }
+    await h.app.whenIdle();
+    expect(h.app.store.count).toBe(2);
+    expect(h.app.store.selectedCount).toBe(0);
+    expect(h.downloads).toHaveLength(0);
+  });
+
+  it('releases the image on teardown', async () => {
+    const h = await withFrames(1);
+    open(h, 0);
+    const src = h.el<HTMLImageElement>('viewer-img').src;
+    h.app.destroy();
+    expect(h.revoked).toContain(src);
   });
 });
 
@@ -1396,6 +1859,12 @@ describe('sharpness in the gallery', () => {
     [...h.el('gallery').querySelectorAll('.tile__time')].map((n) => n.textContent ?? '');
   const badges = (h: Harness): number[] =>
     [...h.el('gallery').querySelectorAll('.tile__sharp')].map((n) => Number(n.textContent));
+
+  it('shows the score in the viewer', async () => {
+    const h = await withScoredFrames();
+    h.el('gallery').querySelectorAll<HTMLElement>('.tile__view')[1]!.click();
+    expect(h.el('viewer-meta').textContent).toMatch(/^1920×1080 · JPG · 8 B · sharpness \d+$/);
+  });
 
   it('scores every captured frame and shows it on the tile', async () => {
     const h = await withScoredFrames();

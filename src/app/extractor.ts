@@ -25,7 +25,9 @@ export interface VideoLike {
   readonly videoHeight: number;
   addEventListener(type: string, listener: () => void): void;
   removeEventListener(type: string, listener: () => void): void;
-  requestVideoFrameCallback?(callback: () => void): number;
+  requestVideoFrameCallback?(
+    callback: (now: number, metadata?: { readonly mediaTime?: number }) => void,
+  ): number;
   cancelVideoFrameCallback?(handle: number): void;
 }
 
@@ -138,6 +140,93 @@ export async function ensureMetadata(video: VideoLike, options: SeekOptions = {}
 }
 
 /**
+ * A presented frame further than this from the seek target belongs to an
+ * earlier seek, not this one. Generous on purpose: the frame shown for a
+ * target starts up to one frame duration before it, and that duration is not
+ * reliably known here.
+ */
+export const PRESENT_MATCH_SECONDS = 0.5;
+
+interface PresentWatch {
+  /** Resolves once the frame has been presented, or after a short deadline. */
+  wait(): Promise<void>;
+  cancel(): void;
+}
+
+/**
+ * Start listening for the frame at `target` (or, with no target, the next
+ * frame) being painted.
+ *
+ * Listening has to start before the seek is issued: browsers may present the
+ * new frame before they dispatch `seeked`, and a callback registered after
+ * that point never fires, which costs the whole deadline on every frame.
+ */
+function watchPresentedFrame(video: VideoLike, target: number | null, timers: TimerLike): PresentWatch {
+  if (typeof video.requestVideoFrameCallback !== 'function') {
+    return { wait: () => Promise.resolve(), cancel: () => {} };
+  }
+
+  let presented = false;
+  let cancelled = false;
+  let handle: number | undefined;
+  let notify: (() => void) | null = null;
+
+  const listen = (): void => {
+    try {
+      handle = video.requestVideoFrameCallback!((_now, metadata) => {
+        if (cancelled) return;
+        const mediaTime = metadata?.mediaTime;
+        if (
+          target !== null &&
+          typeof mediaTime === 'number' &&
+          Math.abs(mediaTime - target) > PRESENT_MATCH_SECONDS
+        ) {
+          listen();
+          return;
+        }
+        presented = true;
+        notify?.();
+      });
+    } catch {
+      presented = true;
+      notify?.();
+    }
+  };
+
+  const cancel = (): void => {
+    cancelled = true;
+    if (handle !== undefined) {
+      try {
+        video.cancelVideoFrameCallback?.(handle);
+      } catch {
+        // Nothing to cancel.
+      }
+    }
+  };
+
+  listen();
+
+  return {
+    cancel,
+    wait: () =>
+      new Promise<void>((resolve) => {
+        if (presented) {
+          resolve();
+          return;
+        }
+        const finish = (): void => {
+          timers.clearTimeout(timer);
+          notify = null;
+          cancel();
+          resolve();
+        };
+        const timer = timers.setTimeout(finish, PRESENT_TIMEOUT_MS);
+        notify = finish;
+      }),
+  };
+}
+
+/**
  * Wait until the frame at the current position has actually been painted.
  *
  * Without this, `drawImage` right after `seeked` can capture the *previous*
@@ -148,24 +237,7 @@ export async function waitForPresentedFrame(
   video: VideoLike,
   options: SeekOptions = {},
 ): Promise<void> {
-  if (typeof video.requestVideoFrameCallback !== 'function') return;
-  const timers = options.timers ?? defaultTimers;
-
-  await new Promise<void>((resolve) => {
-    let settled = false;
-    const finish = (): void => {
-      if (settled) return;
-      settled = true;
-      timers.clearTimeout(timer);
-      resolve();
-    };
-    const timer = timers.setTimeout(finish, PRESENT_TIMEOUT_MS);
-    try {
-      video.requestVideoFrameCallback!(finish);
-    } catch {
-      finish();
-    }
-  });
+  await watchPresentedFrame(video, null, options.timers ?? defaultTimers).wait();
 }
 
 /** Move the playhead to `time` and wait for the decoder to catch up. */
@@ -190,9 +262,15 @@ export async function seekTo(
     signal: options.signal,
     label: `seek to ${time.toFixed(3)}s`,
   });
+  const presented = watchPresentedFrame(video, time, options.timers ?? defaultTimers);
   video.currentTime = time;
-  await settled;
-  await waitForPresentedFrame(video, options);
+  try {
+    await settled;
+  } catch (error) {
+    presented.cancel();
+    throw error;
+  }
+  await presented.wait();
 }
 
 /* ------------------------------------------------------------------ */
@@ -231,6 +309,8 @@ export interface RenderResult {
   readonly size: Size;
   /** 0–100 (see lib/sharpness.ts), or `null` when it could not be measured. */
   readonly sharpness: number | null;
+  /** A small JPEG of the frame for gallery tiles, or `null` when none was made. */
+  readonly thumb: Blob | null;
 }
 
 export interface FrameRenderer {
@@ -244,7 +324,17 @@ export interface RendererOptions {
   readonly createCanvas?: () => CanvasLike;
   /** When set, only this source rectangle is drawn — e.g. to trim detected letterbox bars. */
   readonly crop?: CropRect;
+  /**
+   * Longest edge of the gallery thumbnail made alongside each frame; omit for
+   * none. A tile that shows the full-size image makes the browser decode all
+   * of it — tens of megabytes per 4K frame — to paint a thumb-sized picture.
+   */
+  readonly thumbEdge?: number;
 }
+
+export const THUMB_QUALITY = 0.8;
+/** An output this close to thumbnail size is its own thumbnail. */
+const THUMB_WORTHWHILE_RATIO = 1.5;
 
 function defaultCanvasFactory(): CanvasLike {
   return document.createElement('canvas') as unknown as CanvasLike;
@@ -264,6 +354,8 @@ export function createCanvasRenderer(options: RendererOptions): FrameRenderer {
   const factory = options.createCanvas ?? defaultCanvasFactory;
   const canvas = factory();
   let analysisCanvas: CanvasLike | null = null;
+  let thumbCanvas: CanvasLike | null = null;
+  const thumbEdge = options.thumbEdge ?? 0;
   const quality = qualityFor(options.format, options.quality);
   const crop = options.crop;
 
@@ -281,6 +373,26 @@ export function createCanvasRenderer(options: RendererOptions): FrameRenderer {
       ctx.drawImage(video as never, 0, 0, size.width, size.height);
     }
     return sharpnessScore(ctx.getImageData(0, 0, size.width, size.height));
+  }
+
+  /** Scale the frame already on the output canvas down to a thumbnail. */
+  async function makeThumb(size: Size): Promise<Blob | null> {
+    if (thumbEdge <= 0 || Math.max(size.width, size.height) <= thumbEdge * THUMB_WORTHWHILE_RATIO) {
+      return null;
+    }
+    const small = fitToMaxEdge(size, thumbEdge);
+    thumbCanvas ??= factory();
+    thumbCanvas.width = small.width;
+    thumbCanvas.height = small.height;
+    const ctx = thumbCanvas.getContext('2d');
+    if (!ctx) return null;
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(canvas as never, 0, 0, small.width, small.height);
+    const target = thumbCanvas;
+    return new Promise<Blob | null>((resolve) => {
+      target.toBlob(resolve, 'image/jpeg', THUMB_QUALITY);
+    });
   }
 
   return {
@@ -320,7 +432,14 @@ export function createCanvasRenderer(options: RendererOptions): FrameRenderer {
       } catch {
         // Tainted or unreadable canvas — keep the frame, drop the score.
       }
-      return { blob, size, sharpness };
+
+      let thumb: Blob | null = null;
+      try {
+        thumb = await makeThumb(size);
+      } catch {
+        // The tile falls back to the full image.
+      }
+      return { blob, size, sharpness, thumb };
     },
   };
 }
@@ -334,6 +453,7 @@ export interface CapturedFrame {
   readonly blob: Blob;
   readonly size: Size;
   readonly sharpness: number | null;
+  readonly thumb: Blob | null;
 }
 
 export interface ExtractProgress {
@@ -354,6 +474,17 @@ export interface ExtractOptions {
   readonly onFrame?: (frame: CapturedFrame) => void;
   /** Hands control back to the browser between frames. */
   readonly yieldToUi?: () => Promise<void>;
+  /**
+   * Awaited before each frame; holds the run while it is pending. Used to wait
+   * out the page being in the background, where seeks stall and would each be
+   * written off as a failed frame.
+   */
+  readonly gate?: () => Promise<void>;
+  /**
+   * True while the page cannot decode (it is in the background). A frame that
+   * fails then is tried once more, after `gate`, instead of being skipped.
+   */
+  readonly isSuspended?: () => boolean;
 }
 
 export interface ExtractResult {
@@ -379,9 +510,11 @@ export async function extractFrames(options: ExtractOptions): Promise<ExtractRes
   const total = options.times.length;
   const yieldToUi = options.yieldToUi ?? defaultYield;
   let cancelled = false;
+  let retried = -1;
 
   for (let index = 0; index < total; index += 1) {
     const time = options.times[index]!;
+    await options.gate?.();
     if (options.signal?.aborted) {
       cancelled = true;
       break;
@@ -393,14 +526,19 @@ export async function extractFrames(options: ExtractOptions): Promise<ExtractRes
         timers: options.timers,
         signal: options.signal,
       });
-      const { blob, size, sharpness } = await options.renderer.render(options.video);
-      const frame: CapturedFrame = { time, blob, size, sharpness };
+      const { blob, size, sharpness, thumb } = await options.renderer.render(options.video);
+      const frame: CapturedFrame = { time, blob, size, sharpness, thumb };
       frames.push(frame);
       options.onFrame?.(frame);
     } catch (error) {
       if (error instanceof CancelledError) {
         cancelled = true;
         break;
+      }
+      if (retried !== index && options.isSuspended?.()) {
+        retried = index;
+        index -= 1;
+        continue;
       }
       const message = error instanceof Error ? error.message : String(error);
       failures.push(new ExtractionError(message, time));

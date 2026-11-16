@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { bootstrap, downloadBlob, shareFiles } from '../src/app/main.js';
+import { bootstrap, downloadBlob, keepAwake, shareFiles } from '../src/app/main.js';
 import { mountMarkup, patchVideo } from './helpers/dom.js';
 
 const originalCreate = URL.createObjectURL;
@@ -152,6 +152,42 @@ describe('shareFiles', () => {
     (navigator as unknown as { canShare: unknown }).canShare = vi.fn(() => true);
     (navigator as unknown as { share: unknown }).share = vi.fn(() => Promise.reject(new Error('boom')));
     await expect(shareFiles([candidate])).resolves.toBe('unsupported');
+  });
+});
+
+describe('keepAwake', () => {
+  const setWakeLock = (value: unknown): void => {
+    Object.defineProperty(navigator, 'wakeLock', { configurable: true, value });
+  };
+  afterEach(() => {
+    delete (navigator as unknown as Record<string, unknown>).wakeLock;
+  });
+
+  it('reports nothing to release where the API is missing', async () => {
+    await expect(keepAwake()).resolves.toBeNull();
+  });
+
+  it('holds a screen lock and hands back its release', async () => {
+    const release = vi.fn(() => Promise.resolve());
+    const request = vi.fn(() => Promise.resolve({ release }));
+    setWakeLock({ request });
+
+    const letGo = await keepAwake();
+    expect(request).toHaveBeenCalledWith('screen');
+    letGo!();
+    expect(release).toHaveBeenCalledTimes(1);
+  });
+
+  it('shrugs off a release that fails', async () => {
+    setWakeLock({ request: () => Promise.resolve({ release: () => Promise.reject(new Error('gone')) }) });
+    const letGo = await keepAwake();
+    expect(() => letGo!()).not.toThrow();
+    await Promise.resolve();
+  });
+
+  it('reports nothing to release when the request is refused', async () => {
+    setWakeLock({ request: () => Promise.reject(new Error('low power')) });
+    await expect(keepAwake()).resolves.toBeNull();
   });
 });
 

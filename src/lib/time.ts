@@ -139,14 +139,18 @@ export function timeForFrame(index: number, fps: number): number {
 }
 
 /**
- * Step `offset` whole frames from `time`, clamped to [0, duration].
- * Snapping to frame centres keeps repeated taps from drifting.
+ * Step `offset` whole frames from `time`, clamped to the clip.
+ *
+ * The result is the centre of the target frame, never its leading edge: a
+ * time on the boundary between two frames is shown as either one depending on
+ * rounding, which makes a step repeat one frame and skip the next at rates
+ * like 29.97. From a centre, repeated taps can't drift either.
  */
 export function stepByFrames(time: number, offset: number, fps: number, duration: number): number {
+  if (!isUsableTime(duration) || duration <= 0) return 0;
   const step = frameDuration(fps);
   const current = isUsableTime(time) ? time : 0;
-  const index = Math.round(current / step);
-  const next = (index + Math.trunc(offset)) * step;
-  const max = isUsableTime(duration) && duration > 0 ? Math.max(0, duration - step / 2) : 0;
-  return clamp(next, 0, max);
+  const last = Math.max(0, Math.ceil(duration / step - 1e-6) - 1);
+  const index = clamp(frameIndexAt(current, fps) + Math.trunc(offset), 0, last);
+  return Math.min(timeForFrame(index, fps), duration);
 }

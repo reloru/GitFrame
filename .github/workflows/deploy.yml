@@ -26,6 +26,16 @@ jobs:
 
       - run: npm ci
 
+      # Nothing is deployed that has not passed the same checks as CI.
+      - name: Lint
+        run: npm run lint
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
       - name: Build client
         run: npm run build
 

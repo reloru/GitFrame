@@ -312,6 +312,32 @@
       </div>
     </div>
 
+    <!-- Full-screen look at one frame. Pinch-zoom works here as it does anywhere on the page. -->
+    <div class="viewer" id="viewer" hidden role="dialog" aria-modal="true" aria-labelledby="viewer-title">
+      <div class="viewer__bar">
+        <p class="viewer__title" id="viewer-title"></p>
+        <button type="button" class="btn btn--small" id="viewer-close" aria-label="Close viewer">Done</button>
+      </div>
+      <div class="viewer__stage" id="viewer-stage">
+        <img class="viewer__img" id="viewer-img" alt="" />
+      </div>
+      <p class="viewer__meta" id="viewer-meta"></p>
+      <div class="viewer__row" role="group" aria-label="Browse frames">
+        <button type="button" class="btn btn--icon" id="viewer-prev" aria-label="Previous frame in gallery">
+          <span aria-hidden="true">‹</span>
+        </button>
+        <button type="button" class="btn viewer__select" id="viewer-select" aria-pressed="false">Select</button>
+        <button type="button" class="btn btn--icon" id="viewer-next" aria-label="Next frame in gallery">
+          <span aria-hidden="true">›</span>
+        </button>
+      </div>
+      <div class="viewer__row">
+        <button type="button" class="btn btn--small btn--danger" id="viewer-delete">Delete</button>
+        <button type="button" class="btn btn--small" id="viewer-goto">Go to moment</button>
+        <button type="button" class="btn btn--small btn--accent" id="viewer-save">Save</button>
+      </div>
+    </div>
+
     <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
 
     <script type="module" src="/app.js"></script>

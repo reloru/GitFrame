@@ -732,6 +732,45 @@ main {
   gap: 10px;
 }
 
+.gallery__item {
+  position: relative;
+}
+
+/* Opens the viewer. A 48px target in the corner the selection mark doesn't use;
+   the rest of the tile still selects. */
+.tile__view {
+  -webkit-appearance: none;
+  appearance: none;
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 48px;
+  height: 48px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #fff;
+  cursor: pointer;
+  touch-action: manipulation;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.tile__view-icon {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.6);
+  border: 2px solid #fff;
+  padding: 5px;
+}
+
+.tile__view:focus-visible {
+  outline: 3px solid var(--primary);
+  outline-offset: -3px;
+}
+
 .tile {
   position: relative;
   border: 2px solid var(--line);
@@ -872,6 +911,92 @@ main {
 }
 
 /* ------------------------------------------------------------------ */
+/* Frame viewer                                                        */
+/* ------------------------------------------------------------------ */
+
+body.is-locked {
+  overflow: hidden;
+}
+
+.viewer {
+  position: fixed;
+  inset: 0;
+  z-index: 15;
+  background: var(--bg);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: calc(var(--safe-t) + 10px) calc(var(--pad) + var(--safe-r)) calc(var(--pad) + var(--safe-b))
+    calc(var(--pad) + var(--safe-l));
+  overscroll-behavior: contain;
+}
+
+.viewer__bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.viewer__title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.viewer__stage {
+  flex: 1 1 0;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #000;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.viewer__img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.viewer__meta {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.viewer__row {
+  display: flex;
+  gap: 8px;
+}
+
+.viewer__row .btn {
+  flex: 1 1 0;
+  padding: 0 8px;
+}
+
+.viewer__row .btn--icon {
+  font-size: 26px;
+}
+
+.viewer__select {
+  flex: 2 1 0;
+  min-height: 56px;
+}
+
+.viewer__select[aria-pressed='true'] {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #04231a;
+}
+
+/* ------------------------------------------------------------------ */
 /* Toast                                                               */
 /* ------------------------------------------------------------------ */
 
@@ -896,6 +1021,12 @@ main {
   max-width: calc(100vw - 32px);
   text-align: center;
   box-shadow: 0 6px 24px rgba(0, 0, 0, 0.5);
+}
+
+/* Over the viewer, a message sits on the picture rather than on the buttons. */
+body.is-locked .toast {
+  top: calc(var(--safe-t) + 84px);
+  bottom: auto;
 }
 
 .toast--inline {
