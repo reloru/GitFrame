@@ -37,3 +37,7 @@ Worker.
   `stepByFrames` and `buildPlan`).
 - Behaviour on iOS Safari cannot be tested here. Chromium via Playwright is the
   nearest check; say so when a change depends on Safari specifics.
+- `package.json` overrides `minimatch` to 11.x under
+  `@typescript-eslint/typescript-estree`, because the fix for
+  GHSA-g3hv-75wg-m249 was not backported to the 10.x line it asks for. Remove
+  the override once `typescript-eslint` depends on `minimatch` >= 11.0.1 itself.
